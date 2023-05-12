@@ -1,10 +1,12 @@
-package coordinator
+package fleetctrl
 
 import (
 	"bytes"
-	"crypto/rand"
 	"errors"
 	"fmt"
+	"github.com/iv-menshenin/choreo/fleetctrl/internal/election/ownership"
+	"github.com/iv-menshenin/choreo/fleetctrl/internal/election/waitfor"
+	"github.com/iv-menshenin/choreo/fleetctrl/internal/id"
 	"log"
 	"net"
 	"sync"
@@ -18,7 +20,7 @@ type (
 	Manager struct {
 		loglevel LogLevel
 
-		id   [16]byte
+		id   id.ID
 		port uint16
 
 		ls Transport
@@ -32,8 +34,8 @@ type (
 		done chan struct{}
 
 		ins *Instances
-		awr *Awaiter
-		own *Ownership
+		awr *waitfor.Awaiter
+		own *ownership.Ownership
 	}
 	LogLevel uint8
 )
@@ -65,21 +67,16 @@ const (
 )
 
 func New(transport Transport) *Manager {
-	var idX [16]byte
-	_, err := rand.Read(idX[:])
-	if err != nil {
-		panic(err)
-	}
 	return &Manager{
 		loglevel: LogLevelError,
-		id:       idX,
+		id:       id.New(),
 		ls:       transport,
 		state:    StateCreated,
 		armed:    UnArmed,
 		done:     make(chan struct{}),
 		ins:      newInstances(),
-		awr:      newAwaiter(),
-		own:      newOwnership(),
+		awr:      waitfor.New(),
+		own:      ownership.New(nil),
 	}
 }
 
@@ -219,37 +216,37 @@ func (m *Manager) readLoop() {
 			m.setErr(err)
 			return
 		}
-		m.awr.trig(received.Data)
+		m.awr.Trigger(received.Data)
 	}
 }
 
-func (m *Manager) process(msg Msg) error {
-	if bytes.Equal(msg.sender, m.id[:]) {
+func (m *Manager) process(msg *message) error {
+	if msg.sender == m.id {
 		// skip self owned messages
 		return nil
 	}
 	var err error
 	// tell them all that we are online
-	if bytes.Equal(msg.cmd, cmdBroadKnock) {
+	if msg.cmd == cmdBroadKnock {
 		if m.ins.add(msg.sender, msg.addr) {
 			m.debug("REGISTERED: %x %s", msg.sender, msg.addr.String())
 		}
 		err = m.sendWelcome(msg.addr)
 	}
 	// register everyone who said hello
-	if bytes.Equal(msg.cmd, cmdWelcome) {
+	if msg.cmd == cmdWelcome {
 		if m.ins.add(msg.sender, msg.addr) {
 			m.debug("REGISTERED: %x %s", msg.sender, msg.addr.String())
 		}
 	}
 	// confirm the on-line instance list
-	if bytes.Equal(msg.cmd, cmdBroadCompare) {
+	if msg.cmd == cmdBroadCompare {
 		if bytes.Equal(m.ins.hashAllID(m.id), msg.data) {
 			err = m.sendCompared(msg.addr, msg.data)
 		}
 	}
 	// someone bragged about a captured key
-	if bytes.Equal(msg.cmd, cmdBroadMine) {
+	if msg.cmd == cmdBroadMine {
 		if saveErr := m.ins.save(msg.sender, string(msg.data), msg.addr); saveErr != nil {
 			// err = m.sendReset(msg.data) not yours
 			m.debug("OWNERSHIP IGNORED %x: %s %+v", msg.sender, string(msg.data), saveErr)
@@ -258,27 +255,25 @@ func (m *Manager) process(msg Msg) error {
 			err = m.sendSaved(msg.addr, msg.sender, msg.data)
 		}
 	}
-	if bytes.Equal(msg.cmd, cmdBroadWantKey) {
+	if msg.cmd == cmdBroadWantKey {
 		switch m.ins.search(string(msg.data)) {
 		case Mine:
 			err = m.sendRegistered(msg.addr, msg.data)
 		case "":
-			var id [16]byte
-			copy(id[:], msg.sender)
-			if m.own.add(id, string(msg.data)) {
-				m.debug("OWNERSHIP CANDIDATE %x: %s", id, string(msg.data))
+			if m.own.Add(msg.sender, string(msg.data)) {
+				m.debug("OWNERSHIP CANDIDATE %x: %s", msg.sender[:], string(msg.data))
 				err = m.sendCandidate(msg.addr, msg.sender, msg.data)
 			}
 		}
 	}
-	if bytes.Equal(msg.cmd, cmdRegistered) {
+	if msg.cmd == cmdRegistered {
 		if saveErr := m.ins.save(msg.sender, string(msg.data), msg.addr); saveErr != nil {
 			m.warning("OWNERSHIP RESET %x: %s %+v", msg.sender, string(msg.data), saveErr)
 			err = m.sendReset(msg.data) // not yours
 		}
 	}
 	// someone wants to revoke possession of a key because of a conflict
-	if bytes.Equal(msg.cmd, cmdBroadReset) {
+	if msg.cmd == cmdBroadReset {
 		m.ins.reset(string(msg.data))
 	}
 

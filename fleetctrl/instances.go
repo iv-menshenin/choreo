@@ -1,9 +1,9 @@
-package coordinator
+package fleetctrl
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
+	"github.com/iv-menshenin/choreo/fleetctrl/internal/id"
 	"net"
 	"sync"
 	"time"
@@ -16,7 +16,7 @@ type (
 		mineKeys  map[string]struct{}
 	}
 	Instance struct {
-		ID   [16]byte
+		ID   id.ID
 		tm   time.Time
 		addr net.Addr
 		keys map[string]struct{} // TODO performance
@@ -64,16 +64,16 @@ func (i *Instances) getCount() int {
 	return cnt
 }
 
-func (i *Instances) add(ID []byte, addr net.Addr) bool {
+func (i *Instances) add(ID id.ID, addr net.Addr) bool {
 	var isNew bool
 	i.mux.Lock()
 	instance, ok := i.instances[addr.String()]
-	if !ok || !bytes.Equal(instance.ID[:], ID) {
+	if !ok || instance.ID != ID {
 		instance = Instance{
+			ID:   ID,
 			addr: addr,
 			keys: make(map[string]struct{}),
 		}
-		copy(instance.ID[:], ID)
 		isNew = true
 	}
 	instance.tm = time.Now()
@@ -101,13 +101,13 @@ func (i *Instances) searchInt(key string) string {
 	return ""
 }
 
-func (i *Instances) searchIntInst(key string) []byte {
+func (i *Instances) searchIntInst(key string) *id.ID {
 	if _, ok := i.mineKeys[key]; ok {
-		return []byte("MINE")
+		return &id.NullID
 	}
 	for _, v := range i.instances {
 		if _, ok := v.keys[key]; ok {
-			return v.ID[:]
+			return &v.ID
 		}
 	}
 	return nil
@@ -130,14 +130,14 @@ func (i *Instances) fromOwn(key string) {
 	i.mux.Unlock()
 }
 
-func (i *Instances) save(ID []byte, key string, addr net.Addr) error {
+func (i *Instances) save(ID id.ID, key string, addr net.Addr) error {
 	i.mux.Lock()
-	if owner := i.searchIntInst(key); owner != nil {
+	if owner := i.searchIntInst(key); owner != nil && *owner != ID {
 		i.mux.Unlock()
 		return fmt.Errorf("it's not yours, it's %x", owner)
 	}
 	instance, ok := i.instances[addr.String()]
-	if !ok || !bytes.Equal(instance.ID[:], ID) {
+	if !ok || instance.ID != ID {
 		i.mux.Unlock()
 		return errors.New("i dont know you")
 	}
