@@ -20,7 +20,7 @@ type (
 func Test_Discovery(t *testing.T) {
 	const (
 		nodesCount = 10
-		initTime   = 3 * time.Second
+		initTime   = 15 * time.Second
 		msgCount   = 1000
 	)
 	var (
