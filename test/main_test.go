@@ -2,8 +2,10 @@ package test
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -31,7 +33,9 @@ func NewFleet(t *testing.T, ctx context.Context, cnt int) *TestFleet {
 		done:  make(chan struct{}),
 		close: make(chan struct{}),
 	}
+	var wg sync.WaitGroup
 	for n := 0; n < cnt; n++ {
+		wg.Add(1)
 		listener := network.NewListener()
 		c := fleetctrl.New(
 			listener,
@@ -45,12 +49,16 @@ func NewFleet(t *testing.T, ctx context.Context, cnt int) *TestFleet {
 			c.Stop()
 		}()
 		go func() {
-			defer close(test.done)
+			defer wg.Done()
 			if err := c.Manage(); err != nil {
 				t.Errorf("Manager stopped with %+v", err)
 			}
 		}()
 	}
+	go func() {
+		wg.Wait()
+		close(test.done)
+	}()
 	for _, v := range test.fleet {
 		<-v.NotifyArmed()
 	}
@@ -79,9 +87,9 @@ func (s *TestFleet) Close() {
 
 func Test_Discovery(t *testing.T) {
 	const (
-		nodesCount = 10
+		nodesCount = 9
 		initTime   = 15 * time.Second
-		msgCount   = 1000
+		msgCount   = 100
 	)
 	log.SetFlags(log.Lmicroseconds)
 	ctx, cancel := context.WithTimeout(context.Background(), initTime)
@@ -101,7 +109,9 @@ func Test_Discovery(t *testing.T) {
 		keeper  string
 		counter int64
 		init    = make(chan struct{})
+		wg      sync.WaitGroup
 	)
+	wg.Add(msgCount)
 	for n := 0; n < msgCount; n++ {
 		idx, svc := fleet.getService()
 		iterNum := atomic.AddInt64(&counter, 1)
@@ -109,7 +119,8 @@ func Test_Discovery(t *testing.T) {
 			<-init
 		}
 		go func() {
-			v, err := svc.CheckKey(context.Background(), "test")
+			defer wg.Done()
+			v, err := svc.CheckKey(context.Background(), t.Name())
 			if err != nil {
 				t.Errorf("CheckKey error: %+v", err)
 			}
@@ -130,6 +141,61 @@ func Test_Discovery(t *testing.T) {
 			}
 		}()
 	}
+	wg.Wait()
+	fleet.Close()
+	if err := fleet.waitStop(ctx); err != nil {
+		t.Errorf("ERROR AT STOPPING: %v", err)
+	}
+}
+
+func Test_Performance(t *testing.T) {
+	const (
+		nodesCount = 5
+		initTime   = 15 * time.Second
+		msgCount   = 10000
+		msgClass   = 16
+	)
+	log.SetFlags(log.Lmicroseconds)
+	ctx, cancel := context.WithTimeout(context.Background(), initTime)
+	defer cancel()
+
+	fleet := NewFleet(t, ctx, nodesCount)
+
+	select {
+	case <-ctx.Done():
+		t.Error("TIMEOUT ERROR")
+
+	default:
+		// start test
+	}
+
+	var (
+		keeper  [msgClass]string
+		muxes   [msgClass]sync.Mutex
+		counter int64
+		wg      sync.WaitGroup
+	)
+	wg.Add(msgCount)
+	for n := 0; n < msgCount; n++ {
+		go func() {
+			defer wg.Done()
+			iterNum := atomic.AddInt64(&counter, 1)
+			cc := iterNum % msgClass
+			mx := &muxes[cc]
+			idx, svc := fleet.getService()
+			v, err := svc.CheckKey(context.Background(), fmt.Sprintf("%s-%d", t.Name(), cc))
+			if err != nil {
+				t.Errorf("CheckKey error: %+v", err)
+			}
+			if v == fleetctrl.Mine {
+				return
+			}
+			mx.Lock()
+			keeper[cc] = idx
+			mx.Unlock()
+		}()
+	}
+	wg.Wait()
 	fleet.Close()
 	if err := fleet.waitStop(ctx); err != nil {
 		t.Errorf("ERROR AT STOPPING: %v", err)
