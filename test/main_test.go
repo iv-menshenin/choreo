@@ -53,7 +53,6 @@ func Test_Discovery(t *testing.T) {
 	case <-balancer[0].NotifyArmed():
 		// inititalization OK
 	}
-	time.Sleep(initTime)
 	_, err := balancer[0].CheckKey(context.Background(), "test")
 	if err != nil {
 		t.Errorf("First CheckKey invocation %+v", err)
