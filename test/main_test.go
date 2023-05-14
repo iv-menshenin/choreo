@@ -141,7 +141,16 @@ func Test_Discovery(t *testing.T) {
 			}
 		}()
 	}
-	wg.Wait()
+	var done = make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	case <-done:
+	}
 	fleet.Close()
 	if err := fleet.waitStop(ctx); err != nil {
 		t.Errorf("ERROR AT STOPPING: %v", err)
@@ -195,7 +204,16 @@ func Test_Performance(t *testing.T) {
 			mx.Unlock()
 		}()
 	}
-	wg.Wait()
+	var done = make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	case <-done:
+	}
 	fleet.Close()
 	if err := fleet.waitStop(ctx); err != nil {
 		t.Errorf("ERROR AT STOPPING: %v", err)
