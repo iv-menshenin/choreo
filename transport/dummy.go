@@ -30,6 +30,8 @@ type (
 	}
 )
 
+var DummyBroadcast net.IP = []byte{0, 0, 0, 0}
+
 func NewDummy() *DummyNetwork {
 	var network = DummyNetwork{
 		lst: make(map[[4]byte]*DummyListener),
@@ -58,9 +60,6 @@ func NewDummy() *DummyNetwork {
 		}
 	}()
 	return &network
-}
-
-func sendIf(rcv chan<- Datagram, msg Datagram) {
 }
 
 func (n *DummyNetwork) NewListener() *DummyListener {
@@ -125,4 +124,6 @@ func (d *DummyListener) Listen([]byte) (*Received, error) {
 	}, nil
 }
 
-var DummyBroadcast net.IP = []byte{0, 0, 0, 0}
+func (d *DummyListener) GetIP() net.IP {
+	return d.ip
+}
