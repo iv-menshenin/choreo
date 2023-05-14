@@ -202,21 +202,32 @@ func (m *Manager) setErr(err error) {
 func (m *Manager) readLoop() {
 	var buf [1024]byte
 	for {
-		received, err := m.ls.Listen(buf[:])
-		if err != nil {
-			m.setErr(err)
+		select {
+		case <-m.done:
 			return
+
+		default:
+			if atomic.LoadInt64(&m.state) == StateBroken {
+				return
+			}
+			received, err := m.ls.Listen(buf[:])
+			if err != nil {
+				m.setErr(err)
+				return
+			}
+			go func() {
+				parsed, err := parse(received)
+				if err != nil {
+					m.error("ERROR: %+v", err)
+					return
+				}
+				if err = m.process(parsed); err != nil {
+					m.setErr(err)
+					return
+				}
+				m.awr.Trigger(received.Data)
+			}()
 		}
-		parsed, err := parse(received)
-		if err != nil {
-			m.error("ERROR: %+v", err)
-			continue
-		}
-		if err = m.process(parsed); err != nil {
-			m.setErr(err)
-			return
-		}
-		m.awr.Trigger(received.Data)
 	}
 }
 

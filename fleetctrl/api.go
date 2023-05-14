@@ -101,7 +101,7 @@ func (m *Manager) tryToOwn(key string) (bool, error) {
 var defaultAwaitTimeout = 50 * time.Millisecond
 
 func (m *Manager) awaitMostOf(cmd cmd, data []byte) <-chan error {
-	m.debug("AWAITING %x: %s %x", m.id, cmd, data)
+	m.debug("AWAITING %x: %s %x", m.id[:], cmd, data)
 
 	var quorum = int64(m.ins.getCount()+1) / 2
 	var wg sync.WaitGroup
@@ -112,13 +112,13 @@ func (m *Manager) awaitMostOf(cmd cmd, data []byte) <-chan error {
 	var result = make(chan error, 1)
 
 	go func() {
+		defer close(cancel)
 		select {
 		case <-done:
 		case <-kvo:
 		case <-time.After(defaultAwaitTimeout):
+			close(timeout)
 		}
-		close(timeout)
-		close(cancel)
 	}()
 	for _, v := range m.ins.getAllID() {
 		wg.Add(1)
