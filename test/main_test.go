@@ -13,10 +13,11 @@ import (
 type (
 	Mr interface {
 		CheckKey(ctx context.Context, key string) (string, error)
+		NotifyArmed() <-chan struct{}
 	}
 )
 
-func Test_sd(t *testing.T) {
+func Test_Discovery(t *testing.T) {
 	const (
 		nodesCount = 10
 		initTime   = 3 * time.Second
@@ -43,6 +44,14 @@ func Test_sd(t *testing.T) {
 				t.Errorf("Manager stopped with %+v", err)
 			}
 		}()
+	}
+	select {
+	case <-time.After(initTime):
+		t.Error("timeout exceeded")
+		return
+
+	case <-balancer[0].NotifyArmed():
+		// inititalization OK
 	}
 	time.Sleep(initTime)
 	_, err := balancer[0].CheckKey(context.Background(), "test")

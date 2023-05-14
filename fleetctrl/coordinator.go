@@ -26,7 +26,6 @@ type (
 		ls Transport
 
 		state int64
-		armed int64
 		stop  int64
 
 		err  error
@@ -36,6 +35,10 @@ type (
 		ins *Instances
 		awr *waitfor.Awaiter
 		own *ownership.Ownership
+
+		armedMux sync.Mutex
+		armedFlg bool
+		armedCh  []chan<- struct{}
 	}
 	LogLevel uint8
 )
@@ -61,18 +64,12 @@ const (
 	StateBroken
 )
 
-const (
-	UnArmed int64 = iota
-	Armed
-)
-
 func New(transport Transport) *Manager {
 	return &Manager{
 		loglevel: LogLevelError,
 		id:       id.New(),
 		ls:       transport,
 		state:    StateCreated,
-		armed:    UnArmed,
 		done:     make(chan struct{}),
 		ins:      newInstances(),
 		awr:      waitfor.New(),
@@ -116,6 +113,47 @@ func (m *Manager) Manage() error {
 
 func (m *Manager) Stop() {
 	atomic.AddInt64(&m.stop, 1)
+}
+
+func (m *Manager) Status() bool {
+	m.armedMux.Lock()
+	defer m.armedMux.Unlock()
+	return m.armedFlg
+}
+
+func (m *Manager) Armed() bool {
+	m.armedMux.Lock()
+	armed := m.armedFlg
+	if !armed {
+		m.armedFlg = true
+		m.warning("ARMED")
+		m.publicNotifyArmed()
+	}
+	m.armedMux.Unlock()
+	return !armed
+}
+
+func (m *Manager) NotifyArmed() <-chan struct{} {
+	var ch = make(chan struct{})
+	m.armedMux.Lock()
+	if !m.armedFlg {
+		m.subscribeNotifyArmed(ch)
+	} else {
+		close(ch)
+	}
+	m.armedMux.Unlock()
+	return ch
+}
+
+func (m *Manager) Unarmed(err error) bool {
+	m.armedMux.Lock()
+	armed := m.armedFlg
+	if armed {
+		m.armedFlg = false
+		m.warning("UNARMED: %+v", err)
+	}
+	m.armedMux.Unlock()
+	return armed
 }
 
 func (m *Manager) stateLoop() {
@@ -180,13 +218,9 @@ func (m *Manager) checkArmedStatus() (err error) {
 		}
 	}
 	if err != nil {
-		if atomic.CompareAndSwapInt64(&m.armed, Armed, UnArmed) {
-			m.warning("UNARMED: %+v", err)
-		}
-		return nil
-	}
-	if atomic.CompareAndSwapInt64(&m.armed, UnArmed, Armed) {
-		m.warning("ARMED")
+		m.Unarmed(err)
+	} else {
+		m.Armed()
 	}
 	return nil
 }
@@ -289,4 +323,15 @@ func (m *Manager) process(msg *message) error {
 	}
 
 	return err
+}
+
+func (m *Manager) subscribeNotifyArmed(ch chan<- struct{}) {
+	m.armedCh = append(m.armedCh, ch)
+}
+
+func (m *Manager) publicNotifyArmed() {
+	for _, v := range m.armedCh {
+		close(v)
+	}
+	m.armedCh = m.armedCh[:0]
 }

@@ -17,7 +17,7 @@ var (
 )
 
 func (m *Manager) CheckKey(ctx context.Context, key string) (string, error) {
-	if atomic.LoadInt64(&m.armed) != Armed {
+	if !m.Status() {
 		return "", errors.New("not ready")
 	}
 	if len(key) > 128 {
