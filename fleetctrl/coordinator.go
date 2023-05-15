@@ -18,11 +18,8 @@ import (
 
 type (
 	Manager struct {
-		loglevel LogLevel
-
-		id   id.ID
-		port uint16
-
+		id id.ID
+		ll LogLevel
 		ls Transport
 
 		state int64
@@ -66,29 +63,29 @@ const (
 
 func New(transport Transport) *Manager {
 	return &Manager{
-		loglevel: LogLevelError,
-		id:       id.New(),
-		ls:       transport,
-		state:    StateCreated,
-		done:     make(chan struct{}),
-		ins:      newInstances(),
-		awr:      waitfor.New(),
-		own:      ownership.New(nil),
+		ll:    LogLevelError,
+		id:    id.New(),
+		ls:    transport,
+		state: StateCreated,
+		done:  make(chan struct{}),
+		ins:   newInstances(),
+		awr:   waitfor.New(),
+		own:   ownership.New(nil),
 	}
 }
 
 func (m *Manager) SetLogLevel(l LogLevel) {
-	m.loglevel = l
+	m.ll = l
 }
 
 func (m *Manager) debug(format string, args ...any) {
-	if m.loglevel >= LogLevelDebug {
+	if m.ll >= LogLevelDebug {
 		log.Printf(format, args...)
 	}
 }
 
 func (m *Manager) warning(format string, args ...any) {
-	if m.loglevel >= LogLevelWarning {
+	if m.ll >= LogLevelWarning {
 		log.Printf(format, args...)
 	}
 }
