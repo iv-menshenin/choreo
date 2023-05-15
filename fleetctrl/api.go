@@ -96,59 +96,55 @@ func (m *Manager) giveUpOwn(key string) {
 }
 
 func (m *Manager) awaitMostOf(cmd cmd, data []byte) <-chan error {
+	ctx, clear := context.WithTimeout(context.Background(), halfDurationOf(ownership.DefaultTimeout))
 	m.debug("AWAITING %x: %s %x", m.id[:], cmd, data)
 
-	var quorum = int64(m.ins.getCount()+1) / 2
-	var waitAll sync.WaitGroup
-	var cancel = make(chan struct{})
-	var done = make(chan struct{})
-	var kvo = make(chan struct{})
-	var timeout = make(chan struct{})
-	var result = make(chan error, 1)
+	var (
+		waitAll          sync.WaitGroup
+		quorumCounter    = int64(m.ins.getCount()+1) / 2
+		awaitingCancel   = make(chan struct{})
+		electionComplete = make(chan struct{})
+		quorumComplete   = make(chan struct{})
+		result           = make(chan error, 1)
+		electorate       = m.ins.getAllID()
+	)
+	waitAll.Add(len(electorate))
 
-	go func() {
-		defer close(cancel)
-		select {
-		case <-done:
-		case <-kvo:
-		case <-time.After(halfDurationOf(ownership.DefaultTimeout)):
-			close(timeout)
-		}
-	}()
-
-	for _, v := range m.ins.getAllID() {
-		waitAll.Add(1)
-
+	for _, v := range electorate {
 		var (
 			answered = make(chan struct{})
 			retCmd   = makeCmdData(cmd[:], v[:], data)
 			awaitID  = m.awr.Add(retCmd, answered)
 		)
 		go func() {
+			defer waitAll.Done()
+			defer m.awr.Del(awaitID)
 			select {
 			case <-answered:
-				if cnt := atomic.AddInt64(&quorum, -1); cnt == 0 {
-					close(kvo)
+				if cnt := atomic.AddInt64(&quorumCounter, -1); cnt == 0 {
+					close(quorumComplete)
 				}
-			case <-cancel:
+			case <-awaitingCancel:
 			}
-			m.awr.Del(awaitID)
-			waitAll.Done()
 		}()
 	}
 
 	go func() {
+		defer clear()
 		waitAll.Wait()
-		close(done)
+		close(electionComplete)
 	}()
-	go func() {
-		select {
-		case <-timeout:
-			result <- ErrAwaitTimeout
-		case <-done:
-		case <-kvo:
-		}
-		close(result)
-	}()
+	go waitFor(ctx, quorumComplete, electionComplete, result, awaitingCancel)
 	return result
+}
+
+func waitFor(ctx context.Context, quo, all <-chan struct{}, result chan<- error, afterAll chan<- struct{}) {
+	select {
+	case <-ctx.Done():
+		result <- ErrAwaitTimeout
+	case <-quo:
+	case <-all:
+	}
+	close(result)
+	close(afterAll)
 }

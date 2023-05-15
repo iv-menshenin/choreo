@@ -35,6 +35,8 @@ type (
 		armedMux sync.Mutex
 		armedFlg bool
 		armedCh  []chan<- struct{}
+
+		lastTimeDiscovered time.Time
 	}
 	LogLevel uint8
 )
@@ -158,7 +160,6 @@ func (m *Manager) Unarmed(err error) bool {
 func (m *Manager) stateLoop() {
 	defer close(m.done)
 
-	var lastTimeDiscovered time.Time
 	for state := atomic.LoadInt64(&m.state); state != StateClosed; state = atomic.LoadInt64(&m.state) {
 
 		if atomic.LoadInt64(&m.stop) > 0 {
@@ -168,42 +169,48 @@ func (m *Manager) stateLoop() {
 		case StateCreated:
 
 		case StateReady:
-			if del := m.ins.cleanup(); del > 0 {
-				m.warning("UNLINKED: %d", del)
-			}
-			if time.Since(lastTimeDiscovered).Seconds() >= 1 {
-				if err := m.checkArmedStatus(); err != nil {
-					m.setErr(err)
-					return
-				}
-				atomic.CompareAndSwapInt64(&m.state, StateReady, StateDiscovery)
-			}
+			m.readyStateAction()
 
 		case StateDiscovery:
-			if err := m.sendKnockKnock(); err != nil {
-				m.setErr(err)
-				return
-			}
-			atomic.CompareAndSwapInt64(&m.state, StateDiscovery, StateReady)
-			lastTimeDiscovered = time.Now()
+			m.discoveryStateAction()
 
 		case StateBroken:
-
+			atomic.StoreInt64(&m.state, StateDeactivated)
 			fallthrough
 
 		case StateDeactivated:
 			atomic.StoreInt64(&m.state, StateClosed)
-
 			fallthrough
 
 		case StateClosed:
-
 			return
 
 		}
 
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func (m *Manager) readyStateAction() {
+	if del := m.ins.cleanup(); del > 0 {
+		m.warning("UNLINKED: %d", del)
+	}
+	if time.Since(m.lastTimeDiscovered).Seconds() >= 1 {
+		if err := m.checkArmedStatus(); err != nil {
+			m.setErr(err)
+			return
+		}
+		atomic.CompareAndSwapInt64(&m.state, StateReady, StateDiscovery)
+	}
+}
+
+func (m *Manager) discoveryStateAction() {
+	if err := m.sendKnockKnock(); err != nil {
+		m.setErr(err)
+		return
+	}
+	atomic.CompareAndSwapInt64(&m.state, StateDiscovery, StateReady)
+	m.lastTimeDiscovered = time.Now()
 }
 
 func (m *Manager) checkArmedStatus() (err error) {
@@ -239,7 +246,6 @@ func (m *Manager) setErr(err error) {
 }
 
 func (m *Manager) readLoop() {
-	var buf [1024]byte
 	for {
 		select {
 		case <-m.done:
@@ -249,25 +255,32 @@ func (m *Manager) readLoop() {
 			if atomic.LoadInt64(&m.state) == StateBroken {
 				return
 			}
-			received, err := m.ls.Listen(buf[:])
-			if err != nil {
+			var buf [1024]byte
+			if err := m.readAndProcess(buf[:]); err != nil {
 				m.setErr(err)
 				return
 			}
-			go func() {
-				parsed, err := parse(received)
-				if err != nil {
-					m.error("ERROR: %+v", err)
-					return
-				}
-				if err = m.process(parsed); err != nil {
-					m.setErr(err)
-					return
-				}
-				m.awr.Trigger(received.Data)
-			}()
 		}
 	}
+}
+
+func (m *Manager) readAndProcess(buf []byte) error {
+	received, err := m.ls.Listen(buf)
+	if err != nil {
+		return fmt.Errorf("can't read from listener: %w", err)
+	}
+	parsed, err := parse(received)
+	if err != nil {
+		return err
+	}
+	go func() {
+		if err = m.process(parsed); err != nil {
+			m.setErr(err)
+			return
+		}
+		m.awr.Trigger(received.Data)
+	}()
+	return nil
 }
 
 func (m *Manager) process(msg *message) error {
@@ -276,58 +289,88 @@ func (m *Manager) process(msg *message) error {
 		return nil
 	}
 	var err error
+	switch msg.cmd {
 	// tell them all that we are online
-	if msg.cmd == cmdBroadKnock {
-		if m.ins.add(msg.sender, msg.addr) {
-			m.debug("REGISTERED: %x %s", msg.sender, msg.addr.String())
-		}
-		err = m.sendWelcome(msg.addr)
-	}
+	case cmdBroadKnock:
+		err = m.processKnockKnock(msg)
+
 	// register everyone who said hello
-	if msg.cmd == cmdWelcome {
-		if m.ins.add(msg.sender, msg.addr) {
-			m.debug("REGISTERED: %x %s", msg.sender, msg.addr.String())
-		}
-	}
+	case cmdWelcome:
+		err = m.processWelcome(msg)
+
 	// confirm the on-line instance list
-	if msg.cmd == cmdBroadCompare {
-		if bytes.Equal(m.ins.hashAllID(m.id), msg.data) {
-			err = m.sendCompared(msg.addr, msg.data)
-		}
-	}
+	case cmdBroadCompare:
+		err = m.processCompare(msg)
+
 	// someone bragged about a captured key
-	if msg.cmd == cmdBroadMine {
-		if saveErr := m.ins.save(msg.sender, string(msg.data), msg.addr); saveErr != nil {
-			// err = m.sendReset(msg.data) not yours
-			m.debug("OWNERSHIP IGNORED %x: %s %+v", msg.sender, string(msg.data), saveErr)
-		} else {
-			m.debug("OWNERSHIP APPROVED %x: %s", msg.sender, string(msg.data))
-			err = m.sendSaved(msg.addr, msg.sender, msg.data)
-		}
-	}
-	if msg.cmd == cmdBroadWantKey {
-		switch m.ins.search(string(msg.data)) {
-		case Mine:
-			err = m.sendRegistered(msg.addr, msg.data)
-		case "":
-			if m.own.Add(msg.sender, string(msg.data)) {
-				m.debug("OWNERSHIP CANDIDATE %x: %s", msg.sender[:], string(msg.data))
-				err = m.sendCandidate(msg.addr, msg.sender, msg.data)
-			}
-		}
-	}
-	if msg.cmd == cmdRegistered {
-		if saveErr := m.ins.save(msg.sender, string(msg.data), msg.addr); saveErr != nil {
-			m.warning("OWNERSHIP RESET %x: %s %+v", msg.sender, string(msg.data), saveErr)
-			err = m.sendReset(msg.data) // not yours
-		}
-	}
+	case cmdBroadMine:
+		err = m.processMine(msg)
+
+	case cmdBroadWantKey:
+		err = m.processWant(msg)
+
+	case cmdRegistered:
+		err = m.processRegistered(msg)
+
 	// someone wants to revoke possession of a key because of a conflict
-	if msg.cmd == cmdBroadReset {
+	case cmdBroadReset:
 		m.ins.reset(string(msg.data))
 	}
 
 	return err
+}
+
+func (m *Manager) processKnockKnock(msg *message) error {
+	if m.ins.add(msg.sender, msg.addr) {
+		m.debug("REGISTERED: %x %s", msg.sender, msg.addr.String())
+	}
+	return m.sendWelcome(msg.addr)
+}
+
+func (m *Manager) processWelcome(msg *message) error {
+	if m.ins.add(msg.sender, msg.addr) {
+		m.debug("REGISTERED: %x %s", msg.sender, msg.addr.String())
+	}
+	return nil
+}
+
+func (m *Manager) processCompare(msg *message) error {
+	if bytes.Equal(m.ins.hashAllID(m.id), msg.data) {
+		return m.sendCompared(msg.addr, msg.data)
+	}
+	return nil
+}
+
+func (m *Manager) processMine(msg *message) error {
+	if saveErr := m.ins.save(msg.sender, string(msg.data), msg.addr); saveErr != nil {
+		// err = m.sendReset(msg.data) not yours
+		m.debug("OWNERSHIP IGNORED %x: %s %+v", msg.sender, string(msg.data), saveErr)
+	} else {
+		m.debug("OWNERSHIP APPROVED %x: %s", msg.sender, string(msg.data))
+		return m.sendSaved(msg.addr, msg.sender, msg.data)
+	}
+	return nil
+}
+
+func (m *Manager) processWant(msg *message) error {
+	switch m.ins.search(string(msg.data)) {
+	case Mine:
+		return m.sendRegistered(msg.addr, msg.data)
+	case "":
+		if m.own.Add(msg.sender, string(msg.data)) {
+			m.debug("OWNERSHIP CANDIDATE %x: %s", msg.sender[:], string(msg.data))
+			return m.sendCandidate(msg.addr, msg.sender, msg.data)
+		}
+	}
+	return nil
+}
+
+func (m *Manager) processRegistered(msg *message) error {
+	if saveErr := m.ins.save(msg.sender, string(msg.data), msg.addr); saveErr != nil {
+		m.warning("OWNERSHIP RESET %x: %s %+v", msg.sender, string(msg.data), saveErr)
+		return m.sendReset(msg.data) // not yours
+	}
+	return nil
 }
 
 func (m *Manager) subscribeNotifyArmed(ch chan<- struct{}) {
