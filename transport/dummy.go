@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"crypto/rand"
 	"log"
+	mr "math/rand"
 	"net"
 	"strings"
 	"sync"
+	"time"
 )
 
 type (
@@ -51,6 +53,7 @@ func NewDummy() *DummyNetwork {
 				if broad || receiverIP == participantIP {
 					var rcv = v.rcv
 					go func() {
+						<-time.After(time.Duration(mr.Intn(5)+2) * time.Millisecond) // network latency
 						rcv <- msg
 						log.Printf("DELIVERED TO %s: %s %x", receiverIP, msg.data[:4], msg.data[20:])
 					}()
