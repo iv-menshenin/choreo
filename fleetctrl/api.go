@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/iv-menshenin/choreo/fleetctrl/internal/election/ownership"
 )
 
 const Mine = "MINE"
@@ -60,11 +62,13 @@ func (m *Manager) CheckKey(ctx context.Context, key string) (string, error) {
 		if instance := m.ins.search(key); instance != "" {
 			return instance, nil
 		}
+		repeatAfter := time.Duration(rand.Intn(50))*time.Millisecond + ownership.DefaultTimeout*2
+		m.warning("CANT OWN (RETRY AFTER %v): %v", repeatAfter, err)
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
 
-		case <-time.After(time.Duration(rand.Intn(50)+50) * time.Millisecond):
+		case <-time.After(repeatAfter):
 			// next trying
 		}
 	}
