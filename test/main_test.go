@@ -1,6 +1,7 @@
 package test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -86,6 +87,14 @@ func (s *TestFleet) Close() {
 }
 
 func Test_Discovery(t *testing.T) {
+	var out = bytes.NewBuffer(nil)
+	log.SetOutput(out)
+	defer func() {
+		if t.Failed() {
+			fmt.Print(out.String())
+		}
+	}()
+
 	const (
 		nodesCount = 9
 		initTime   = 15 * time.Second
@@ -138,10 +147,18 @@ func Test_Discovery(t *testing.T) {
 }
 
 func Test_Performance(t *testing.T) {
+	var out = bytes.NewBuffer(nil)
+	log.SetOutput(out)
+	defer func() {
+		if t.Failed() {
+			fmt.Print(out.String())
+		}
+	}()
+
 	const (
 		nodesCount = 5
 		initTime   = 15 * time.Second
-		msgCount   = 10000
+		msgCount   = 100000
 		msgClass   = 16
 	)
 	log.SetFlags(log.Lmicroseconds)
@@ -159,6 +176,7 @@ func Test_Performance(t *testing.T) {
 	}
 
 	var (
+		band    = make(chan struct{}, 25)
 		keeper  [msgClass]string
 		muxes   [msgClass]sync.Mutex
 		counter int64
@@ -168,6 +186,10 @@ func Test_Performance(t *testing.T) {
 	for n := 0; n < msgCount; n++ {
 		go func() {
 			defer wg.Done()
+			band <- struct{}{}
+			defer func() {
+				<-band
+			}()
 			iterNum := atomic.AddInt64(&counter, 1)
 			cc := iterNum % msgClass
 			mx := &muxes[cc]
@@ -177,10 +199,17 @@ func Test_Performance(t *testing.T) {
 				t.Errorf("CheckKey error: %+v", err)
 			}
 			if v == fleetctrl.Mine {
+				if keeper[cc] == "" || keeper[cc] == idx {
+					keeper[cc] = idx
+				}
 				return
 			}
+			v = strings.Split(v, ":")[0] // remove port
 			mx.Lock()
-			keeper[cc] = idx
+			if kcc := keeper[cc]; kcc != "" && keeper[cc] != v {
+				t.Errorf("expected %s, got: %s", kcc, v)
+			}
+			keeper[cc] = v
 			mx.Unlock()
 		}()
 	}
