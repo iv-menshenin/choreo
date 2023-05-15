@@ -3,60 +3,87 @@ package test
 import (
 	"context"
 	"github.com/iv-menshenin/choreo/fleetctrl"
-	"github.com/iv-menshenin/choreo/transport"
 	"sync"
 	"testing"
+
+	"github.com/iv-menshenin/choreo/transport"
 )
 
 type (
 	Service interface {
 		CheckKey(ctx context.Context, key string) (string, error)
 		NotifyArmed() <-chan struct{}
+		Stop()
 	}
 	TestFleet struct {
+		ctx context.Context
+		t   *testing.T
+
 		fleet map[string]Service
 		done  chan struct{}
 		close chan struct{}
+
+		wg  sync.WaitGroup
+		net interface {
+			NewListener() *transport.DummyListener
+		}
 	}
 )
 
 func NewFleet(t *testing.T, ctx context.Context, cnt int) *TestFleet {
-	var network = transport.NewDummy()
 	var test = TestFleet{
+		ctx: ctx,
+		t:   t,
+
 		fleet: make(map[string]Service),
 		done:  make(chan struct{}),
 		close: make(chan struct{}),
+
+		net: transport.NewDummy(),
 	}
-	var wg sync.WaitGroup
 	for n := 0; n < cnt; n++ {
-		wg.Add(1)
-		listener := network.NewListener()
-		c := fleetctrl.New(
-			listener,
-		)
-		test.fleet[listener.GetIP().String()] = c
-		go func() {
-			select {
-			case <-ctx.Done():
-			case <-test.close:
-			}
-			c.Stop()
-		}()
-		go func() {
-			defer wg.Done()
-			if err := c.Manage(); err != nil {
-				t.Errorf("Manager stopped with %+v", err)
-			}
-		}()
+		test.Grow()
 	}
 	go func() {
-		wg.Wait()
+		test.wg.Wait()
 		close(test.done)
 	}()
 	for _, v := range test.fleet {
 		<-v.NotifyArmed()
 	}
 	return &test
+}
+
+func (s *TestFleet) Grow() {
+	s.wg.Add(1)
+	listener := s.net.NewListener()
+	c := fleetctrl.New(
+		listener,
+	)
+	s.fleet[listener.GetIP().String()] = c
+	go func() {
+		select {
+		case <-s.ctx.Done():
+		case <-s.close:
+		}
+		c.Stop()
+	}()
+	go func() {
+		defer s.wg.Done()
+		if err := c.Manage(); err != nil {
+			s.t.Errorf("Manager stopped with %+v", err)
+		}
+	}()
+}
+
+func (s *TestFleet) StopOne() {
+	var k string
+	var v Service
+	for k, v = range s.fleet {
+		break
+	}
+	delete(s.fleet, k)
+	v.Stop()
 }
 
 func (s *TestFleet) getService() (string, Service) {
