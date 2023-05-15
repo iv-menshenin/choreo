@@ -108,48 +108,28 @@ func Test_Discovery(t *testing.T) {
 	var (
 		keeper  string
 		counter int64
-		init    = make(chan struct{})
-		wg      sync.WaitGroup
 	)
-	wg.Add(msgCount)
 	for n := 0; n < msgCount; n++ {
 		idx, svc := fleet.getService()
 		iterNum := atomic.AddInt64(&counter, 1)
-		if iterNum > 1 {
-			<-init
+		v, err := svc.CheckKey(context.Background(), t.Name())
+		if err != nil {
+			t.Errorf("CheckKey error: %+v", err)
 		}
-		go func() {
-			defer wg.Done()
-			v, err := svc.CheckKey(context.Background(), t.Name())
-			if err != nil {
-				t.Errorf("CheckKey error: %+v", err)
+		if iterNum == 1 {
+			keeper = idx
+			continue
+		}
+		v = strings.Split(v, ":")[0] // remove port
+		if idx == keeper {
+			if v != fleetctrl.Mine {
+				t.Errorf("expected %+v, got %+v", fleetctrl.Mine, v)
 			}
-			if iterNum == 1 {
-				keeper = idx
-				close(init)
-				return
-			}
-			v = strings.Split(v, ":")[0] // remove port
-			if idx == keeper {
-				if v != fleetctrl.Mine {
-					t.Errorf("expected %+v, got %+v", fleetctrl.Mine, v)
-				}
-				return
-			}
-			if keeper != v {
-				t.Errorf("expected %+v, got %+v", keeper, v)
-			}
-		}()
-	}
-	var done = make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	case <-done:
+			continue
+		}
+		if keeper != v {
+			t.Errorf("expected %+v, got %+v", keeper, v)
+		}
 	}
 	fleet.Close()
 	if err := fleet.waitStop(ctx); err != nil {
