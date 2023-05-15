@@ -26,7 +26,7 @@ func NewUDP(port uint16) (*Listener, error) {
 	}
 	pc, err := net.ListenPacket("udp4", fmt.Sprintf(":%d", port))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("can't bind port %d: %w", port, err)
 	}
 	var l = Listener{
 		port: port,
@@ -41,7 +41,7 @@ func NewUDP(port uint16) (*Listener, error) {
 func (l *Listener) Listen(buf []byte) (*Received, error) {
 	n, addr, err := l.conn.ReadFrom(buf)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("can't read from udp connection: %w", err)
 	}
 	received := Received{
 		Addr: addr,
@@ -57,7 +57,7 @@ func (l *Listener) SendAll(data []byte) error {
 			Port: int(l.port),
 		}
 		if _, err := l.conn.WriteTo(data, &udp); err != nil {
-			return err
+			return fmt.Errorf("can't write to udp connection: %w", err)
 		}
 	}
 	return nil
@@ -69,23 +69,26 @@ func (l *Listener) Send(data []byte, addr net.Addr) error {
 		var err error
 		udpAddr, err = net.ResolveUDPAddr(addr.Network(), addr.String())
 		if err != nil {
-			return err
+			return fmt.Errorf("can't resolve upd address from %s: %w", udpAddr, err)
 		}
 	}
 	if _, err := l.conn.WriteTo(data, udpAddr); err != nil {
-		return err
+		return fmt.Errorf("can't write to udp connection: %w", err)
 	}
 	return nil
 }
 
 func (l *Listener) Close() error {
-	return l.conn.Close()
+	if err := l.conn.Close(); err != nil {
+		return fmt.Errorf("can't close listener: %w", err)
+	}
+	return nil
 }
 
 func (l *Listener) discoverSubnets() error {
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		return err
+		return fmt.Errorf("can't get list of interfaces: %w", err)
 	}
 	l.addr = make([]net.IP, 0, len(ifaces))
 	for _, i := range ifaces {
@@ -94,20 +97,27 @@ func (l *Listener) discoverSubnets() error {
 		}
 		addrs, err := i.Addrs()
 		if err != nil {
-			return err
+			return fmt.Errorf("can't get addr from %s: %w", i.Name, err)
 		}
 		for _, addr := range addrs {
-			switch v := addr.(type) {
-			case *net.IPNet:
-				ipV4 := v.IP.To4()
-				if ipV4 == nil {
-					continue
-				}
-				ip := make(net.IP, len(ipV4))
-				binary.BigEndian.PutUint32(ip, binary.BigEndian.Uint32(ipV4)|^binary.BigEndian.Uint32(net.IP(v.Mask).To4()))
-				l.addr = append(l.addr, ip)
+			ipNet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
 			}
+
+			ipV4 := ipNet.IP.To4()
+			if ipV4 == nil {
+				continue
+			}
+
+			l.addr = append(l.addr, makeBroadcast(ipV4, ipNet))
 		}
 	}
 	return nil
+}
+
+func makeBroadcast(ipV4 net.IP, ipNet *net.IPNet) net.IP {
+	ip := make(net.IP, len(ipV4))
+	binary.BigEndian.PutUint32(ip, binary.BigEndian.Uint32(ipV4)|^binary.BigEndian.Uint32(net.IP(ipNet.Mask).To4()))
+	return ip
 }

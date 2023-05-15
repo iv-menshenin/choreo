@@ -32,21 +32,26 @@ const (
 
 func New(options *Options) *Ownership {
 	if options == nil {
-		options = &Options{}
+		options = &Options{
+			Timeout: DefaultTimeout,
+			Window:  DefaultWindow,
+		}
 	}
+
 	if options.Window == 0 {
 		options.Window = DefaultWindow
 	}
 	if options.Timeout == 0 {
 		options.Timeout = DefaultTimeout
 	}
-	var o = Ownership{
+
+	var ownership = &Ownership{
 		candidates: make(map[string]candidate),
 		options:    *options,
 		done:       make(chan struct{}),
 	}
-	go o.background()
-	return &o
+	go ownership.background()
+	return ownership
 }
 
 func (o *Ownership) background() {
@@ -81,16 +86,16 @@ func (o *Ownership) deleteCandidates(toDelete []string) {
 	}
 }
 
-func (o *Ownership) Add(ID id.ID, key string) bool {
+func (o *Ownership) Add(ownerID id.ID, key string) bool {
 	o.mux.Lock()
-	if cand, ok := o.candidates[key]; ok && cand.id != ID {
+	if exists, ok := o.candidates[key]; ok && exists.id != ownerID {
 		o.mux.Unlock()
 		return false
 	}
 	o.candidates[key] = candidate{
 		key: key,
 		exp: time.Now().UTC().Add(o.options.Timeout),
-		id:  ID,
+		id:  ownerID,
 	}
 	o.mux.Unlock()
 	return true

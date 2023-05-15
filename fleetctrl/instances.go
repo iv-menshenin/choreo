@@ -64,13 +64,13 @@ func (i *Instances) getCount() int {
 	return cnt
 }
 
-func (i *Instances) add(ID id.ID, addr net.Addr) bool {
+func (i *Instances) add(id id.ID, addr net.Addr) bool {
 	var isNew bool
 	i.mux.Lock()
 	instance, ok := i.instances[addr.String()]
-	if !ok || instance.ID != ID {
+	if !ok || instance.ID != id {
 		instance = Instance{
-			ID:   ID,
+			ID:   id,
 			addr: addr,
 			keys: make(map[string]struct{}),
 		}
@@ -130,14 +130,14 @@ func (i *Instances) fromOwn(key string) {
 	i.mux.Unlock()
 }
 
-func (i *Instances) save(ID id.ID, key string, addr net.Addr) error {
+func (i *Instances) save(id id.ID, key string, addr net.Addr) error {
 	i.mux.Lock()
-	if owner := i.searchIntInst(key); owner != nil && *owner != ID {
+	if owner := i.searchIntInst(key); owner != nil && *owner != id {
 		i.mux.Unlock()
 		return fmt.Errorf("it's not yours, it's %x", owner)
 	}
 	instance, ok := i.instances[addr.String()]
-	if !ok || instance.ID != ID {
+	if !ok || instance.ID != id {
 		i.mux.Unlock()
 		return errors.New("i dont know you")
 	}

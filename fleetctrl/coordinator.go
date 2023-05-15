@@ -2,17 +2,16 @@ package fleetctrl
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
-	"github.com/iv-menshenin/choreo/fleetctrl/internal/election/ownership"
-	"github.com/iv-menshenin/choreo/fleetctrl/internal/election/waitfor"
-	"github.com/iv-menshenin/choreo/fleetctrl/internal/id"
 	"log"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/iv-menshenin/choreo/fleetctrl/internal/election/ownership"
+	"github.com/iv-menshenin/choreo/fleetctrl/internal/election/waitfor"
+	"github.com/iv-menshenin/choreo/fleetctrl/internal/id"
 	"github.com/iv-menshenin/choreo/transport"
 )
 
@@ -100,7 +99,7 @@ func (m *Manager) Key() string {
 
 func (m *Manager) Manage() error {
 	if !atomic.CompareAndSwapInt64(&m.state, StateCreated, StateDiscovery) {
-		return errors.New("wrong state")
+		return ErrWrongState
 	}
 	go m.stateLoop()
 	go m.readLoop()
@@ -131,15 +130,17 @@ func (m *Manager) Armed() bool {
 }
 
 func (m *Manager) NotifyArmed() <-chan struct{} {
-	var ch = make(chan struct{})
+	var notifyWhenArmed = make(chan struct{})
+
 	m.armedMux.Lock()
 	if !m.armedFlg {
-		m.subscribeNotifyArmed(ch)
+		m.subscribeNotifyArmed(notifyWhenArmed)
 	} else {
-		close(ch)
+		close(notifyWhenArmed)
 	}
 	m.armedMux.Unlock()
-	return ch
+
+	return notifyWhenArmed
 }
 
 func (m *Manager) Unarmed(err error) bool {
@@ -150,20 +151,21 @@ func (m *Manager) Unarmed(err error) bool {
 		m.warning("UNARMED: %+v", err)
 	}
 	m.armedMux.Unlock()
+
 	return armed
 }
 
 func (m *Manager) stateLoop() {
-	var lastTimeDiscovered time.Time
 	defer close(m.done)
-	for {
-		time.Sleep(10 * time.Millisecond)
+
+	var lastTimeDiscovered time.Time
+	for state := atomic.LoadInt64(&m.state); state != StateClosed; state = atomic.LoadInt64(&m.state) {
+
 		if atomic.LoadInt64(&m.stop) > 0 {
 			atomic.StoreInt64(&m.state, StateDeactivated)
 		}
 		switch atomic.LoadInt64(&m.state) {
 		case StateCreated:
-			continue
 
 		case StateReady:
 			if del := m.ins.cleanup(); del > 0 {
@@ -176,7 +178,6 @@ func (m *Manager) stateLoop() {
 				}
 				atomic.CompareAndSwapInt64(&m.state, StateReady, StateDiscovery)
 			}
-			continue
 
 		case StateDiscovery:
 			if err := m.sendKnockKnock(); err != nil {
@@ -185,16 +186,23 @@ func (m *Manager) stateLoop() {
 			}
 			atomic.CompareAndSwapInt64(&m.state, StateDiscovery, StateReady)
 			lastTimeDiscovered = time.Now()
-			continue
+
+		case StateBroken:
+
+			fallthrough
 
 		case StateDeactivated:
 			atomic.StoreInt64(&m.state, StateClosed)
+
 			fallthrough
+
 		case StateClosed:
+
 			return
-		case StateBroken:
-			return
+
 		}
+
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

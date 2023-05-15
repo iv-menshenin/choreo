@@ -3,7 +3,7 @@ package fleetctrl
 import (
 	"context"
 	"errors"
-	"math/rand"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -11,47 +11,33 @@ import (
 	"github.com/iv-menshenin/choreo/fleetctrl/internal/election/ownership"
 )
 
-const Mine = "MINE"
+const (
+	// Mine is a special address constant, indicating that the key belongs to the called process itself.
+	Mine = "MINE"
+	// MaximumKeyLength limits the allowed length of the key.
+	MaximumKeyLength = 128
+)
 
 var (
-	mux sync.Mutex
-	chw = make(map[string]chan struct{})
+	ErrNotReady     = errors.New("not ready")
+	ErrKeyTooLong   = errors.New("key-string too long")
+	ErrBadMessage   = errors.New("bad message")
+	ErrAwaitTimeout = errors.New("timeout")
+	ErrWrongState   = errors.New("wrong state")
 )
 
 func (m *Manager) CheckKey(ctx context.Context, key string) (string, error) {
 	if !m.Status() {
-		return "", errors.New("not ready")
+		return "", ErrNotReady
 	}
-	if len(key) > 128 {
-		return "", errors.New("too long key")
+	if len(key) > MaximumKeyLength {
+		return "", ErrKeyTooLong
 	}
-	var o sync.Once
-	var after = func() {}
-	defer func() {
-		after()
-	}()
+
 	for {
 		if instance := m.ins.search(key); instance != "" {
 			return instance, nil
 		}
-		o.Do(func() {
-			mux.Lock()
-			ch, wait := chw[key]
-			if !wait {
-				ch = make(chan struct{})
-				chw[key] = ch
-				after = func() {
-					close(ch)
-					mux.Lock()
-					delete(chw, key)
-					mux.Unlock()
-				}
-			}
-			mux.Unlock()
-			if wait {
-				<-ch
-			}
-		})
 		owned, err := m.tryToOwn(key)
 		if err != nil {
 			return "", err
@@ -62,14 +48,17 @@ func (m *Manager) CheckKey(ctx context.Context, key string) (string, error) {
 		if instance := m.ins.search(key); instance != "" {
 			return instance, nil
 		}
-		repeatAfter := time.Duration(rand.Intn(50))*time.Millisecond + ownership.DefaultTimeout*2
+
+		repeatAfter := insureDurationGreaterProc(ownership.DefaultTimeout)
 		m.warning("CANT OWN (RETRY AFTER %v): %v", repeatAfter, err)
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			m.giveUpOwn(key)
+			return "", fmt.Errorf("can't get ownership: %w", ctx.Err())
 
 		case <-time.After(repeatAfter):
 			// next trying
+			continue
 		}
 	}
 }
@@ -78,7 +67,7 @@ func (m *Manager) tryToOwn(key string) (bool, error) {
 	if !m.own.Add(m.id, key) {
 		return false, nil
 	}
-	chErr := m.awaitMostOf(cmdCandidate, append(append(make([]byte, 0, 16+len(key)), m.id[:]...), []byte(key)...))
+	chErr := m.awaitMostOf(cmdCandidate, makeCmdData(m.id[:], []byte(key)))
 	if err := m.sendWantKey(key); err != nil {
 		return false, err
 	}
@@ -90,7 +79,7 @@ func (m *Manager) tryToOwn(key string) (bool, error) {
 		m.warning("OWNERSHIP BREAKED %x", m.id)
 		return false, nil
 	}
-	chErr = m.awaitMostOf(cmdSaved, append(append(make([]byte, 0, 16+len(key)), m.id[:]...), []byte(key)...))
+	chErr = m.awaitMostOf(cmdSaved, makeCmdData(m.id[:], []byte(key)))
 	if err := m.sendThatIsMine(key); err != nil {
 		return false, err
 	}
@@ -102,13 +91,15 @@ func (m *Manager) tryToOwn(key string) (bool, error) {
 	return true, nil
 }
 
-var defaultAwaitTimeout = 50 * time.Millisecond
+func (m *Manager) giveUpOwn(key string) {
+	m.own.Del(key)
+}
 
 func (m *Manager) awaitMostOf(cmd cmd, data []byte) <-chan error {
 	m.debug("AWAITING %x: %s %x", m.id[:], cmd, data)
 
 	var quorum = int64(m.ins.getCount()+1) / 2
-	var wg sync.WaitGroup
+	var waitAll sync.WaitGroup
 	var cancel = make(chan struct{})
 	var done = make(chan struct{})
 	var kvo = make(chan struct{})
@@ -120,33 +111,40 @@ func (m *Manager) awaitMostOf(cmd cmd, data []byte) <-chan error {
 		select {
 		case <-done:
 		case <-kvo:
-		case <-time.After(defaultAwaitTimeout):
+		case <-time.After(halfDurationOf(ownership.DefaultTimeout)):
 			close(timeout)
 		}
 	}()
+
 	for _, v := range m.ins.getAllID() {
-		wg.Add(1)
-		var ch = make(chan struct{})
-		go func(id int64) {
+		waitAll.Add(1)
+
+		var (
+			answered = make(chan struct{})
+			retCmd   = makeCmdData(cmd[:], v[:], data)
+			awaitID  = m.awr.Add(retCmd, answered)
+		)
+		go func() {
 			select {
-			case <-ch:
+			case <-answered:
 				if cnt := atomic.AddInt64(&quorum, -1); cnt == 0 {
 					close(kvo)
 				}
 			case <-cancel:
 			}
-			m.awr.Del(id)
-			wg.Done()
-		}(m.awr.Add(append(append(append(make([]byte, 0, 20+len(data)), cmd[:]...), v[:]...), data...), ch))
+			m.awr.Del(awaitID)
+			waitAll.Done()
+		}()
 	}
+
 	go func() {
-		wg.Wait()
+		waitAll.Wait()
 		close(done)
 	}()
 	go func() {
 		select {
 		case <-timeout:
-			result <- errors.New("timeout")
+			result <- ErrAwaitTimeout
 		case <-done:
 		case <-kvo:
 		}
