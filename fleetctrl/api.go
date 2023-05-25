@@ -148,3 +148,7 @@ func waitFor(ctx context.Context, quo, all <-chan struct{}, result chan<- error,
 	close(result)
 	close(afterAll)
 }
+
+func (m *Manager) Keys(ctx context.Context) []string {
+	return m.ins.getMine()
+}

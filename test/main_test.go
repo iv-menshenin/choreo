@@ -12,6 +12,7 @@ import (
 type (
 	Service interface {
 		CheckKey(ctx context.Context, key string) (string, error)
+		Keys(ctx context.Context) []string
 		NotifyArmed() <-chan struct{}
 		Stop()
 	}
@@ -74,16 +75,19 @@ func (s *TestFleet) Grow() {
 			s.t.Errorf("Manager stopped with %+v", err)
 		}
 	}()
+	<-c.NotifyArmed()
 }
 
-func (s *TestFleet) StopOne() {
+func (s *TestFleet) StopOne() []string {
 	var k string
 	var v Service
 	for k, v = range s.fleet {
 		break
 	}
 	delete(s.fleet, k)
+	var keys = v.Keys(context.Background())
 	v.Stop()
+	return keys
 }
 
 func (s *TestFleet) getService() (string, Service) {

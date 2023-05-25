@@ -40,6 +40,16 @@ func (i *Instances) getAllID() [][16]byte {
 	return ids
 }
 
+func (i *Instances) getMine() []string {
+	i.mux.RLock()
+	var keys = make([]string, 0, len(i.mineKeys))
+	for key := range i.mineKeys {
+		keys = append(keys, key)
+	}
+	i.mux.RUnlock()
+	return keys
+}
+
 func (i *Instances) hashAllID(self [16]byte) []byte {
 	var ids = make([][16]byte, 0, len(i.instances))
 	i.mux.RLock()
