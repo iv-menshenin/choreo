@@ -38,6 +38,14 @@ func (m *Manager) sendThatIsMine(key string) error {
 	return wrapIfError("can't send MINE", m.ls.SendAll(data))
 }
 
+func (m *Manager) sendThatIsOccupied(addr net.Addr, owner id.ID, key []byte) error {
+	var data = make([]byte, 0, headSize+len(key))
+	data = append(data, cmdOccupied[:]...)
+	data = append(data, owner[:]...)
+	data = append(data, key...)
+	return wrapIfError("can't send OCPD", m.ls.Send(data, addr))
+}
+
 func (m *Manager) sendCandidate(addr net.Addr, owner id.ID, key []byte) error {
 	var data = make([]byte, 0, headSize+idSize+len(key))
 	data = append(data, cmdCandidate[:]...)
@@ -108,6 +116,7 @@ var (
 	cmdRegistered = cmd{'R', 'E', 'G', 'D'}
 	cmdSaved      = cmd{'S', 'A', 'V', 'D'}
 	cmdCompared   = cmd{'C', 'M', 'P', 'O'}
+	cmdOccupied   = cmd{'O', 'C', 'P', 'D'}
 )
 
 type (

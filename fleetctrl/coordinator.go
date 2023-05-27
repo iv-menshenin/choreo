@@ -353,7 +353,7 @@ func (m *Manager) processMine(msg *message) error {
 }
 
 func (m *Manager) processWant(msg *message) error {
-	switch m.ins.search(string(msg.data)) {
+	switch owner := m.ins.search(string(msg.data)); owner {
 	case Mine:
 		return m.sendRegistered(msg.addr, msg.data)
 	case "":
@@ -361,6 +361,9 @@ func (m *Manager) processWant(msg *message) error {
 			m.debug("OWNERSHIP CANDIDATE %x: %s", msg.sender[:], string(msg.data))
 			return m.sendCandidate(msg.addr, msg.sender, msg.data)
 		}
+	default:
+		return m.sendThatIsOccupied(msg.addr, m.ins.getInstanceID(owner), msg.data)
+
 	}
 	return nil
 }

@@ -99,6 +99,13 @@ func (i *Instances) search(key string) string {
 	return instance
 }
 
+func (i *Instances) getInstanceID(instanceKey string) id.ID {
+	i.mux.RLock()
+	instance := i.instances[instanceKey]
+	i.mux.RUnlock()
+	return instance.ID
+}
+
 func (i *Instances) searchInt(key string) string {
 	if _, ok := i.mineKeys[key]; ok {
 		return Mine
