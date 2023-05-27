@@ -61,6 +61,7 @@ func (s *TestFleet) Grow() {
 	c := fleetctrl.New(
 		listener,
 	)
+	c.SetLogLevel(fleetctrl.LogLevelDebug)
 	s.fleet[listener.GetIP().String()] = c
 	go func() {
 		select {
