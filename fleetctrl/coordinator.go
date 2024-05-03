@@ -21,6 +21,7 @@ type (
 		ll LogLevel
 		ls Transport
 
+		alone bool
 		state int64
 		stop  int64
 
@@ -77,6 +78,10 @@ func New(transport Transport) *Manager {
 
 func (m *Manager) SetLogLevel(l LogLevel) {
 	m.ll = l
+}
+
+func (m *Manager) AllowAlone() {
+	m.alone = true
 }
 
 func (m *Manager) debug(format string, args ...any) {
@@ -214,6 +219,9 @@ func (m *Manager) discoveryStateAction() {
 }
 
 func (m *Manager) checkArmedStatus() (err error) {
+	if m.alone && m.ins.getCount() == 0 {
+		return nil
+	}
 	m.debug("CHECK STATUS")
 	var (
 		cnt  = 3
