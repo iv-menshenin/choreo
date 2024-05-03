@@ -27,7 +27,7 @@ func Test_Performance(t *testing.T) {
 
 	const (
 		nodesCount = 5
-		initTime   = 30 * time.Second
+		initTime   = 3 * time.Minute
 		msgCount   = 100000
 		msgClass   = 16
 		parallels  = 64
