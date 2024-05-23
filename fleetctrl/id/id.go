@@ -5,7 +5,9 @@ import (
 	"fmt"
 )
 
-type ID [16]byte
+const Size = 16
+
+type ID [Size]byte
 
 var NullID ID
 
@@ -19,4 +21,16 @@ func New() ID {
 
 func (x ID) String() string {
 	return fmt.Sprintf("%x", x[:])
+}
+
+func (x ID) Less(y ID) bool {
+	for n := 0; n < len(x); n++ {
+		switch {
+		case x[n] < y[n]:
+			return true
+		case x[n] > y[n]:
+			return false
+		}
+	}
+	return false
 }

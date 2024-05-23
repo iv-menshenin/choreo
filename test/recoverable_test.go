@@ -13,9 +13,7 @@ import (
 	"github.com/iv-menshenin/choreo/fleetctrl"
 )
 
-func Test_Recoverability(t *testing.T) {
-	t.Parallel()
-
+func TestRecoverability(t *testing.T) {
 	var out = bytes.NewBuffer(nil)
 	log.SetOutput(out)
 	defer func() {
@@ -34,11 +32,11 @@ func Test_Recoverability(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), initTime)
 	defer cancel()
 
-	fleet := NewFleet(t, ctx, nodesCount)
+	fleet := newTestFleet(ctx, t, nodesCount)
 
 	select {
 	case <-ctx.Done():
-		t.Error("TIMEOUT ERROR")
+		t.Fatal("TIMEOUT ERROR")
 
 	default:
 		// start test
@@ -46,51 +44,91 @@ func Test_Recoverability(t *testing.T) {
 
 	var keeper [msgClass]string
 	for iterNum := 0; iterNum < msgCount; iterNum++ {
+		var host string
 		cc := iterNum % msgClass
 		idx, svc := fleet.getService()
-		v, err := svc.CheckKey(context.Background(), fmt.Sprintf("%s-%d", t.Name(), cc))
-		if errors.Is(err, fleetctrl.ErrNotReady) {
-			<-time.After(time.Second)
-			continue
-		}
-		if v == fleetctrl.Mine {
-			if keeper[cc] == "" || keeper[cc] == idx {
-				keeper[cc] = idx
+		msg := fmt.Sprintf("%s-%d", t.Name(), cc)
+		for {
+			v, err := svc.CheckKey(context.Background(), msg)
+			if errors.Is(err, fleetctrl.ErrNotReady) {
+				<-time.After(50 * time.Millisecond)
+				continue
 			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			host = idx
+			if !v.Me() {
+				host = strings.Split(v.NetAddr().String(), ":")[0]
+			}
+			break
+		}
+		if keeper[cc] == "" {
+			keeper[cc] = idx
 			continue
 		}
-		v = strings.Split(v, ":")[0] // remove port
-		if kcc := keeper[cc]; kcc != "" && keeper[cc] != v {
-			t.Errorf("expected %s, got: %s", kcc, v)
+		if keeper[cc] != host {
+			t.Errorf("expected %s, got: %s", keeper[cc], host)
 		}
-		keeper[cc] = v
 	}
 
-	var missedKeys = fleet.StopOne()
+	lostIP, stopped := fleet.StopOne()
+	missedKeys := stopped.Keys(context.Background())
+	missedID := stopped.ID()
+
 	fmt.Printf("%+v\n", missedKeys)
 	var rebased = make(map[string]struct{})
 	for _, k := range missedKeys {
 		rebased[k] = struct{}{}
 	}
 
-	fleet.Grow()
+	recovered := fleet.ReturnBack(missedID)
 	for iterNum := 0; iterNum < msgCount; iterNum++ {
+		var host string
 		cc := iterNum % msgClass
 		idx, svc := fleet.getService()
 		msg := fmt.Sprintf("%s-%d", t.Name(), cc)
-		v, err := svc.CheckKey(context.Background(), msg)
-		if errors.Is(err, fleetctrl.ErrNotReady) {
-			<-time.After(time.Second)
-			continue
-		}
-		if v == fleetctrl.Mine && keeper[cc] == idx {
-			continue
-		}
-		v = strings.Split(v, ":")[0] // remove port
-		if kcc := keeper[cc]; kcc != "" && keeper[cc] != v {
-			if _, ok := rebased[msg]; !ok {
-				t.Errorf("expected %s, got: %s", kcc, v)
+		for {
+			select {
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			default:
+				// go ahead
 			}
+			v, err := svc.CheckKey(ctx, msg)
+			if errors.Is(err, fleetctrl.ErrNotReady) {
+				<-time.After(50 * time.Millisecond)
+				continue
+			}
+			if err != nil {
+				t.Error(err)
+				continue
+			}
+			if strings.Split(host, ":")[0] == lostIP {
+				<-time.After(250 * time.Millisecond)
+				continue
+			}
+			host = idx
+			if !v.Me() {
+				host = strings.Split(v.NetAddr().String(), ":")[0]
+			}
+			break
+		}
+		if keeper[cc] == idx {
+			continue
+		}
+		if _, ok := rebased[msg]; ok {
+			if host == lostIP {
+				<-time.After(250 * time.Millisecond)
+				continue
+			}
+			if host != recovered {
+				t.Errorf("recovered %s, but refered to: %s (%s)", recovered, host, lostIP)
+			}
+			continue
+		}
+		if kcc := keeper[cc]; kcc != "" && keeper[cc] != host {
+			t.Errorf("expected %s, got: %s", kcc, host)
 		}
 	}
 

@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/iv-menshenin/choreo/fleetctrl/internal/id"
+	"github.com/iv-menshenin/choreo/fleetctrl/id"
 )
 
 type (
@@ -26,7 +26,7 @@ type (
 )
 
 const (
-	DefaultTimeout = 100 * time.Millisecond
+	DefaultTimeout = 500 * time.Millisecond
 	DefaultWindow  = 10 * time.Millisecond
 )
 
@@ -94,7 +94,7 @@ func (o *Ownership) Add(ownerID id.ID, key string) bool {
 	}
 	o.candidates[key] = candidate{
 		key: key,
-		exp: time.Now().UTC().Add(o.options.Timeout),
+		exp: time.Now().Add(o.options.Timeout),
 		id:  ownerID,
 	}
 	o.mux.Unlock()

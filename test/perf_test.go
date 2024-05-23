@@ -5,18 +5,15 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/iv-menshenin/choreo/fleetctrl"
+	"github.com/iv-menshenin/choreo/fleetctrl/id"
 )
 
-func Test_Performance(t *testing.T) {
-	t.Parallel()
-
+func TestPerformance(t *testing.T) {
 	var out = bytes.NewBuffer(nil)
 	log.SetOutput(out)
 	defer func() {
@@ -28,15 +25,15 @@ func Test_Performance(t *testing.T) {
 	const (
 		nodesCount = 5
 		initTime   = 3 * time.Minute
-		msgCount   = 100000
-		msgClass   = 16
+		msgCount   = 1000000
+		msgClass   = 37
 		parallels  = 64
 	)
 	log.SetFlags(log.Lmicroseconds)
 	ctx, cancel := context.WithTimeout(context.Background(), initTime)
 	defer cancel()
 
-	fleet := NewFleet(t, ctx, nodesCount)
+	fleet := newTestFleet(ctx, t, nodesCount)
 
 	select {
 	case <-ctx.Done():
@@ -48,7 +45,7 @@ func Test_Performance(t *testing.T) {
 
 	var (
 		band    = make(chan struct{}, parallels)
-		keeper  [msgClass]string
+		keeper  [msgClass]id.ID
 		muxes   [msgClass]sync.Mutex
 		counter int64
 		wg      sync.WaitGroup
@@ -61,26 +58,31 @@ func Test_Performance(t *testing.T) {
 			defer func() {
 				<-band
 			}()
+
 			iterNum := atomic.AddInt64(&counter, 1)
 			cc := iterNum % msgClass
-			mx := &muxes[cc]
-			idx, svc := fleet.getService()
-			v, err := svc.CheckKey(context.Background(), fmt.Sprintf("%s-%d", t.Name(), cc))
+
+			_, svc := fleet.getService()
+			key := fmt.Sprintf("%s-%d", t.Name(), cc)
+			v, err := svc.CheckKey(context.Background(), key)
 			if err != nil {
 				t.Errorf("CheckKey error: %+v", err)
 			}
-			if v == fleetctrl.Mine {
-				if keeper[cc] == "" || keeper[cc] == idx {
-					keeper[cc] = idx
-				}
+
+			mx := &muxes[cc]
+			mx.Lock()
+			var x = v.ShardID()
+			if v.Me() {
+				x = svc.ID()
+			}
+			if keeper[cc] == id.NullID {
+				keeper[cc] = x
+				mx.Unlock()
 				return
 			}
-			v = strings.Split(v, ":")[0] // remove port
-			mx.Lock()
-			if kcc := keeper[cc]; kcc != "" && keeper[cc] != v {
-				t.Errorf("expected %s, got: %s", kcc, v)
+			if keeper[cc] != x {
+				t.Errorf("expected %q, got %q", keeper[cc], v.ShardID())
 			}
-			keeper[cc] = v
 			mx.Unlock()
 		}()
 	}

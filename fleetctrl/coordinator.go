@@ -1,43 +1,41 @@
 package fleetctrl
 
 import (
-	"bytes"
-	"fmt"
 	"log"
-	"net"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/iv-menshenin/choreo/fleetctrl/id"
 	"github.com/iv-menshenin/choreo/fleetctrl/internal/election/ownership"
 	"github.com/iv-menshenin/choreo/fleetctrl/internal/election/waitfor"
-	"github.com/iv-menshenin/choreo/fleetctrl/internal/id"
-	"github.com/iv-menshenin/choreo/transport"
+	"github.com/iv-menshenin/choreo/fleetctrl/internal/send"
+	"github.com/iv-menshenin/choreo/fleetctrl/internal/shardkeeper"
 )
 
 type (
 	Manager struct {
 		id id.ID
 		ll LogLevel
-		ls Transport
+		ls send.Transport
+		sr *send.Sender
 
-		alone bool
 		state int64
-		stop  int64
+		done  chan struct{}
+		err   error
+		once  sync.Once
 
-		err  error
-		once sync.Once
-		done chan struct{}
+		keeper *shardkeeper.Keeper
+		awr    *waitfor.Awaiter
+		own    *ownership.Ownership
 
-		ins *Instances
-		awr *waitfor.Awaiter
-		own *ownership.Ownership
+		stopA int64
+		stopX chan struct{}
 
 		armedMux sync.Mutex
 		armedFlg bool
 		armedCh  []chan<- struct{}
-
-		lastTimeDiscovered time.Time
 	}
 	LogLevel uint8
 )
@@ -48,40 +46,30 @@ const (
 	LogLevelDebug
 )
 
-type Transport interface {
-	SendAll([]byte) error
-	Send([]byte, net.Addr) error
-	Listen([]byte) (*transport.Received, error)
-}
-
 const (
 	StateCreated int64 = iota
-	StateReady
 	StateDiscovery
-	StateDeactivated
-	StateClosed
-	StateBroken
+	StateStop
 )
 
-func New(transport Transport) *Manager {
+func New(id id.ID, transport send.Transport, options *Options) *Manager {
 	return &Manager{
-		ll:    LogLevelError,
-		id:    id.New(),
-		ls:    transport,
-		state: StateCreated,
-		done:  make(chan struct{}),
-		ins:   newInstances(),
-		awr:   waitfor.New(),
-		own:   ownership.New(nil),
+		ll:     LogLevelError,
+		id:     id,
+		ls:     transport,
+		sr:     send.New(id, transport),
+		state:  StateCreated,
+		done:   make(chan struct{}),
+		keeper: shardkeeper.New(id, options.shardOptions()),
+		awr:    waitfor.New(),
+		own:    ownership.New(nil),
+
+		stopX: make(chan struct{}),
 	}
 }
 
 func (m *Manager) SetLogLevel(l LogLevel) {
 	m.ll = l
-}
-
-func (m *Manager) AllowAlone() {
-	m.alone = true
 }
 
 func (m *Manager) debug(format string, args ...any) {
@@ -100,8 +88,8 @@ func (m *Manager) error(format string, args ...any) {
 	log.Printf(format, args...)
 }
 
-func (m *Manager) Key() string {
-	return fmt.Sprintf("%x", m.id[:])
+func (m *Manager) ID() id.ID {
+	return m.id
 }
 
 func (m *Manager) Manage() error {
@@ -115,7 +103,9 @@ func (m *Manager) Manage() error {
 }
 
 func (m *Manager) Stop() {
-	atomic.AddInt64(&m.stop, 1)
+	if atomic.CompareAndSwapInt64(&m.stopA, 0, 1) {
+		close(m.stopX)
+	}
 }
 
 func (m *Manager) Status() bool {
@@ -162,80 +152,111 @@ func (m *Manager) Unarmed(err error) bool {
 	return armed
 }
 
+type msgID uint8
+
+const (
+	evtNothing msgID = iota
+	evtCheck
+	evtDiscovery
+)
+
 func (m *Manager) stateLoop() {
 	defer close(m.done)
 
-	for state := atomic.LoadInt64(&m.state); state != StateClosed; state = atomic.LoadInt64(&m.state) {
+	var events = make(chan msgID)
+	go m.initMessaging(events)
 
-		if atomic.LoadInt64(&m.stop) > 0 {
-			atomic.StoreInt64(&m.state, StateDeactivated)
-		}
-		switch atomic.LoadInt64(&m.state) {
-		case StateCreated:
+	for event := range events {
+		switch event {
+		case evtNothing:
+			m.warning("%s STATE HASH <<< %x", m.id, m.keeper.Hash())
 
-		case StateReady:
+		case evtCheck:
 			m.readyStateAction()
 
-		case StateDiscovery:
+		case evtDiscovery:
+			m.warning("DISCOVERY %s", m.id)
 			m.discoveryStateAction()
-
-		case StateBroken:
-			atomic.StoreInt64(&m.state, StateDeactivated)
-			fallthrough
-
-		case StateDeactivated:
-			atomic.StoreInt64(&m.state, StateClosed)
-			fallthrough
-
-		case StateClosed:
-			return
-
 		}
+	}
+}
 
-		time.Sleep(10 * time.Millisecond)
+func (m *Manager) initMessaging(events chan<- msgID) {
+	// first of all we need to start discovery
+	events <- evtDiscovery
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		loopMessaging(m.stopX, events, time.Second, evtNothing)
+	}()
+	go func() {
+		defer wg.Done()
+		loopMessaging(m.stopX, events, 10*time.Second, evtCheck)
+	}()
+	go func() {
+		defer wg.Done()
+		loopMessaging(m.stopX, events, 5*time.Second, evtDiscovery)
+	}()
+
+	wg.Wait()
+	close(events)
+}
+
+func loopMessaging(stopChan <-chan struct{}, sendChan chan<- msgID, duration time.Duration, msgID msgID) {
+	for {
+		rnd := time.Duration((rand.Float64()+1)*50) * time.Millisecond
+		select {
+		case <-stopChan:
+			return
+		case <-time.After(duration + rnd):
+			// tick
+		}
+		select {
+		case sendChan <- msgID:
+			// sent
+		case <-stopChan:
+			return
+		}
 	}
 }
 
 func (m *Manager) readyStateAction() {
-	if del := m.ins.cleanup(); del > 0 {
+	del := m.keeper.Cleanup()
+	if del > 0 {
 		m.warning("UNLINKED: %d", del)
 	}
-	if time.Since(m.lastTimeDiscovered).Seconds() >= 1 {
-		if err := m.checkArmedStatus(); err != nil {
-			m.setErr(err)
-			return
-		}
-		atomic.CompareAndSwapInt64(&m.state, StateReady, StateDiscovery)
+	if err := m.checkArmedStatus(); err != nil {
+		m.setErr(err)
+		return
 	}
 }
 
 func (m *Manager) discoveryStateAction() {
-	if err := m.sendKnockKnock(); err != nil {
+	atomic.StoreInt64(&m.state, StateDiscovery)
+	if err := m.sr.KnockKnock(); err != nil {
 		m.setErr(err)
 		return
 	}
-	atomic.CompareAndSwapInt64(&m.state, StateDiscovery, StateReady)
-	m.lastTimeDiscovered = time.Now()
 }
 
 func (m *Manager) checkArmedStatus() (err error) {
-	if m.alone && m.ins.getCount() == 0 {
-		return nil
-	}
 	m.debug("CHECK STATUS")
 	var (
 		cnt  = 3
-		hash = m.ins.hashAllID(m.id)
+		hash = m.keeper.Hash()
 	)
 	for {
-		errCh := m.awaitMostOf(cmdCompared, hash)
-		if err = m.sendCompareInstances(hash); err != nil {
+		errCh := m.awaitMostOf(send.CmdCompared, hash[:])
+		if err = m.sr.CompareInstances(hash[:]); err != nil {
 			return err
 		}
 		err = <-errCh
 		if cnt--; err == nil || cnt < 0 {
 			break
 		}
+		<-time.After(time.Duration((rand.Float64()+1)*15) * time.Millisecond)
 	}
 	if err != nil {
 		m.Unarmed(err)
@@ -249,148 +270,6 @@ func (m *Manager) setErr(err error) {
 	m.error("ERROR: %+v", err)
 	m.once.Do(func() {
 		m.err = err
-		atomic.StoreInt64(&m.state, StateBroken)
+		atomic.StoreInt64(&m.state, StateStop)
 	})
-}
-
-func (m *Manager) readLoop() {
-	for {
-		select {
-		case <-m.done:
-			return
-
-		default:
-			if atomic.LoadInt64(&m.state) == StateBroken {
-				return
-			}
-			var buf [1024]byte
-			if err := m.readAndProcess(buf[:]); err != nil {
-				m.setErr(err)
-				return
-			}
-		}
-	}
-}
-
-func (m *Manager) readAndProcess(buf []byte) error {
-	received, err := m.ls.Listen(buf)
-	if err != nil {
-		return fmt.Errorf("can't read from listener: %w", err)
-	}
-	parsed, err := parse(received)
-	if err != nil {
-		return err
-	}
-	go func() {
-		if err = m.process(parsed); err != nil {
-			m.setErr(err)
-			return
-		}
-		m.awr.Trigger(received.Data)
-	}()
-	return nil
-}
-
-func (m *Manager) process(msg *message) error {
-	if msg.sender == m.id {
-		// skip self owned messages
-		return nil
-	}
-	var err error
-	switch msg.cmd {
-	// tell them all that we are online
-	case cmdBroadKnock:
-		err = m.processKnockKnock(msg)
-
-	// register everyone who said hello
-	case cmdWelcome:
-		err = m.processWelcome(msg)
-
-	// confirm the on-line instance list
-	case cmdBroadCompare:
-		err = m.processCompare(msg)
-
-	// someone bragged about a captured key
-	case cmdBroadMine:
-		err = m.processMine(msg)
-
-	case cmdBroadWantKey:
-		err = m.processWant(msg)
-
-	case cmdRegistered:
-		err = m.processRegistered(msg)
-
-	// someone wants to revoke possession of a key because of a conflict
-	case cmdBroadReset:
-		m.ins.reset(string(msg.data))
-	}
-
-	return err
-}
-
-func (m *Manager) processKnockKnock(msg *message) error {
-	if m.ins.add(msg.sender, msg.addr) {
-		m.debug("REGISTERED: %x %s", msg.sender, msg.addr.String())
-	}
-	return m.sendWelcome(msg.addr)
-}
-
-func (m *Manager) processWelcome(msg *message) error {
-	if m.ins.add(msg.sender, msg.addr) {
-		m.debug("REGISTERED: %x %s", msg.sender, msg.addr.String())
-	}
-	return nil
-}
-
-func (m *Manager) processCompare(msg *message) error {
-	if bytes.Equal(m.ins.hashAllID(m.id), msg.data) {
-		return m.sendCompared(msg.addr, msg.data)
-	}
-	return nil
-}
-
-func (m *Manager) processMine(msg *message) error {
-	if saveErr := m.ins.save(msg.sender, string(msg.data), msg.addr); saveErr != nil {
-		// err = m.sendReset(msg.data) not yours
-		m.debug("OWNERSHIP IGNORED %x: %s %+v", msg.sender, string(msg.data), saveErr)
-	} else {
-		m.debug("OWNERSHIP APPROVED %x: %s", msg.sender, string(msg.data))
-		return m.sendSaved(msg.addr, msg.sender, msg.data)
-	}
-	return nil
-}
-
-func (m *Manager) processWant(msg *message) error {
-	switch owner := m.ins.search(string(msg.data)); owner {
-	case Mine:
-		return m.sendRegistered(msg.addr, msg.data)
-	case "":
-		if m.own.Add(msg.sender, string(msg.data)) {
-			m.debug("OWNERSHIP CANDIDATE %x: %s", msg.sender[:], string(msg.data))
-			return m.sendCandidate(msg.addr, msg.sender, msg.data)
-		}
-	default:
-		return m.sendThatIsOccupied(msg.addr, m.ins.getInstanceID(owner), msg.data)
-
-	}
-	return nil
-}
-
-func (m *Manager) processRegistered(msg *message) error {
-	if saveErr := m.ins.save(msg.sender, string(msg.data), msg.addr); saveErr != nil {
-		m.warning("OWNERSHIP RESET %x: %s %+v", msg.sender, string(msg.data), saveErr)
-		return m.sendReset(msg.data) // not yours
-	}
-	return nil
-}
-
-func (m *Manager) subscribeNotifyArmed(ch chan<- struct{}) {
-	m.armedCh = append(m.armedCh, ch)
-}
-
-func (m *Manager) publicNotifyArmed() {
-	for _, v := range m.armedCh {
-		close(v)
-	}
-	m.armedCh = m.armedCh[:0]
 }

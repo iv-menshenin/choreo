@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,6 +25,10 @@ type (
 		mux sync.RWMutex
 		lst map[[4]byte]*DummyListener
 		net chan Datagram
+
+		started  time.Time
+		bytesAll int64
+		cntAll   int64
 	}
 	Datagram struct {
 		from net.IP
@@ -36,12 +41,15 @@ var DummyBroadcast net.IP = []byte{0, 0, 0, 0}
 
 func NewDummy() *DummyNetwork {
 	var network = DummyNetwork{
-		lst: make(map[[4]byte]*DummyListener),
-		net: make(chan Datagram),
+		lst:     make(map[[4]byte]*DummyListener),
+		net:     make(chan Datagram),
+		started: time.Now(),
 	}
 	go func() {
 		for netPacket := range network.net {
 			var msg = netPacket
+			atomic.AddInt64(&network.bytesAll, int64(len(msg.data)))
+			atomic.AddInt64(&network.cntAll, 1)
 			log.Printf("ROUTING FROM %s TO %s DATA %s %x %x", msg.from, msg.to, msg.data[:4], msg.data[4:20], msg.data[20:])
 			broad := msg.to.Equal(DummyBroadcast)
 			network.mux.RLock()
@@ -54,7 +62,12 @@ func NewDummy() *DummyNetwork {
 					var rcv = v.rcv
 					go func() {
 						<-time.After(time.Duration(mr.Intn(5)+2) * time.Millisecond) //nolint:gosec // network latency
-						rcv <- msg
+						select {
+						case <-time.After(10 * time.Second):
+							// packet lost
+						case rcv <- msg:
+							// received
+						}
 						log.Printf("DELIVERED TO %s: %s %x", receiverIP, msg.data[:4], msg.data[20:])
 					}()
 				}
@@ -81,6 +94,11 @@ func (n *DummyNetwork) NewListener() *DummyListener {
 	n.lst[rndIP] = &l
 	n.mux.Unlock()
 	return &l
+}
+
+func (n *DummyNetwork) Close() {
+	since := time.Since(n.started)
+	log.Printf("NETWORK STAT: %v SENT %d MESSAGES with %d KB (%0.3f kbps)", since, n.cntAll, n.bytesAll/1024, float64((1000*n.bytesAll)/since.Milliseconds())/1024)
 }
 
 func (d *DummyListener) SendAll(data []byte) error {

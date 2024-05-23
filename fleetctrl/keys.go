@@ -4,16 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/iv-menshenin/choreo/fleetctrl/id"
 	"github.com/iv-menshenin/choreo/fleetctrl/internal/election/ownership"
+	"github.com/iv-menshenin/choreo/fleetctrl/internal/send"
 )
 
 const (
-	// Mine is a special address constant, indicating that the key belongs to the called process itself.
-	Mine = "MINE"
 	// MaximumKeyLength limits the allowed length of the key.
 	MaximumKeyLength = 128
 )
@@ -21,32 +22,38 @@ const (
 var (
 	ErrNotReady     = errors.New("not ready")
 	ErrKeyTooLong   = errors.New("key-string too long")
-	ErrBadMessage   = errors.New("bad message")
 	ErrAwaitTimeout = errors.New("timeout")
 	ErrWrongState   = errors.New("wrong state")
 )
 
-func (m *Manager) CheckKey(ctx context.Context, key string) (string, error) {
+type Shard interface {
+	Me() bool
+	Live() bool
+	NetAddr() net.Addr
+	ShardID() id.ID
+}
+
+func (m *Manager) CheckKey(ctx context.Context, key string) (Shard, error) {
 	if !m.Status() {
-		return "", ErrNotReady
+		return nil, ErrNotReady
 	}
 	if len(key) > MaximumKeyLength {
-		return "", ErrKeyTooLong
+		return nil, ErrKeyTooLong
 	}
 
 	for {
-		if instance := m.ins.search(key); instance != "" {
-			return instance, nil
+		if instance, ok := m.keeper.Lookup(key); ok {
+			return &instance, nil
 		}
 		owned, err := m.tryToOwn(key)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		if owned {
-			return Mine, nil
+			return m.keeper.Me(), nil
 		}
-		if instance := m.ins.search(key); instance != "" {
-			return instance, nil
+		if instance, ok := m.keeper.Lookup(key); ok {
+			return &instance, nil
 		}
 
 		repeatAfter := insureDurationGreaterProc(ownership.DefaultTimeout)
@@ -54,7 +61,7 @@ func (m *Manager) CheckKey(ctx context.Context, key string) (string, error) {
 		select {
 		case <-ctx.Done():
 			m.giveUpOwn(key)
-			return "", fmt.Errorf("can't get ownership: %w", ctx.Err())
+			return nil, fmt.Errorf("can't get ownership: %w", ctx.Err())
 
 		case <-time.After(repeatAfter):
 			// next trying
@@ -67,25 +74,25 @@ func (m *Manager) tryToOwn(key string) (bool, error) {
 	if !m.own.Add(m.id, key) {
 		return false, nil
 	}
-	chErr := m.awaitMostOf(cmdCandidate, makeCmdData(m.id[:], []byte(key)))
-	if err := m.sendWantKey(key); err != nil {
+	chErr := m.awaitMostOf(send.CmdCandidate, m.id[:], []byte(key))
+	if err := m.sr.WantKey(key); err != nil {
 		return false, err
 	}
 	if err := <-chErr; err != nil {
-		m.warning("OWNERSHIP DENIED %x: %+v", m.id, err)
+		m.warning("OWNERSHIP DENIED %s: %+v", m.id, err)
 		return false, nil
 	}
-	if !m.ins.toOwn(key) {
-		m.warning("OWNERSHIP BREAKED %x", m.id)
+	if !m.keeper.Own(key) {
+		m.warning("OWNERSHIP FAIL %s", m.id)
 		return false, nil
 	}
-	chErr = m.awaitMostOf(cmdSaved, makeCmdData(m.id[:], []byte(key)))
-	if err := m.sendThatIsMine(key); err != nil {
+	chErr = m.awaitMostOf(send.CmdSaved, m.id[:], []byte(key))
+	if err := m.sr.ThatIsMine(key); err != nil {
 		return false, err
 	}
 	if err := <-chErr; err != nil {
-		m.ins.fromOwn(key)
-		m.warning("OWNERSHIP CANCELLED %x: %+v", m.id, err)
+		m.keeper.Forget(key)
+		m.warning("OWNERSHIP CANCELLED %s: %+v", m.id, err)
 		return false, nil
 	}
 	return true, nil
@@ -95,25 +102,29 @@ func (m *Manager) giveUpOwn(key string) {
 	m.own.Del(key)
 }
 
-func (m *Manager) awaitMostOf(cmd cmd, data []byte) <-chan error {
+type Cmder interface {
+	CmdData(id.ID, ...[]byte) []byte
+}
+
+func (m *Manager) awaitMostOf(cmd Cmder, data ...[]byte) <-chan error {
 	ctx, clear := context.WithTimeout(context.Background(), halfDurationOf(ownership.DefaultTimeout))
-	m.debug("AWAITING %x: %s %x", m.id[:], cmd, data)
+	m.debug("AWAITING %s: %s %x", m.id, cmd, data)
 
 	var (
 		waitAll          sync.WaitGroup
-		quorumCounter    = int64(m.ins.getCount()+1) / 2
+		quorumCounter    = int64(m.keeper.Len()+1) / 2
 		awaitingCancel   = make(chan struct{})
 		electionComplete = make(chan struct{})
 		quorumComplete   = make(chan struct{})
 		result           = make(chan error, 1)
-		electorate       = m.ins.getAllID()
+		electorate       = m.keeper.IDs()
 	)
 	waitAll.Add(len(electorate))
 
 	for _, v := range electorate {
 		var (
 			answered = make(chan struct{})
-			retCmd   = makeCmdData(cmd[:], v[:], data)
+			retCmd   = cmd.CmdData(v, data...)
 			awaitID  = m.awr.Add(retCmd, answered)
 		)
 		go func() {
@@ -149,6 +160,6 @@ func waitFor(ctx context.Context, quo, all <-chan struct{}, result chan<- error,
 	close(afterAll)
 }
 
-func (m *Manager) Keys(ctx context.Context) []string {
-	return m.ins.getMine()
+func (m *Manager) Keys(context.Context) []string {
+	return m.keeper.Mine()
 }

@@ -2,16 +2,25 @@ package test
 
 import (
 	"context"
-	"github.com/iv-menshenin/choreo/fleetctrl"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/iv-menshenin/choreo/fleetctrl"
+	"github.com/iv-menshenin/choreo/fleetctrl/id"
 	"github.com/iv-menshenin/choreo/transport"
+)
+
+var (
+	persistentKeys = fleetctrl.Options{
+		PersistentKeys: true,
+	}
 )
 
 type (
 	Service interface {
-		CheckKey(ctx context.Context, key string) (string, error)
+		ID() id.ID
+		CheckKey(ctx context.Context, key string) (fleetctrl.Shard, error)
 		Keys(ctx context.Context) []string
 		NotifyArmed() <-chan struct{}
 		Stop()
@@ -20,6 +29,7 @@ type (
 		ctx context.Context
 		t   *testing.T
 
+		mux   sync.Mutex
 		fleet map[string]Service
 		done  chan struct{}
 		close chan struct{}
@@ -27,11 +37,12 @@ type (
 		wg  sync.WaitGroup
 		net interface {
 			NewListener() *transport.DummyListener
+			Close()
 		}
 	}
 )
 
-func NewFleet(t *testing.T, ctx context.Context, cnt int) *TestFleet {
+func newTestFleet(ctx context.Context, t *testing.T, cnt int) *TestFleet {
 	var test = TestFleet{
 		ctx: ctx,
 		t:   t,
@@ -42,27 +53,66 @@ func NewFleet(t *testing.T, ctx context.Context, cnt int) *TestFleet {
 
 		net: transport.NewDummy(),
 	}
+
+	var wg sync.WaitGroup
+	wg.Add(cnt)
 	for n := 0; n < cnt; n++ {
-		test.Grow()
+		go func() {
+			defer wg.Done()
+			test.Grow()
+		}()
 	}
+	wg.Wait()
+
 	go func() {
 		test.wg.Wait()
+		test.net.Close()
+		time.Sleep(time.Second)
+
 		close(test.done)
 	}()
 	for _, v := range test.fleet {
-		<-v.NotifyArmed()
+		select {
+		case <-ctx.Done():
+			// bad
+		case <-v.NotifyArmed():
+			// ok
+		}
 	}
 	return &test
+}
+
+func (s *TestFleet) ReturnBack(missedID id.ID) string {
+	s.wg.Add(1)
+	listener := s.net.NewListener()
+	c := fleetctrl.New(
+		missedID,
+		listener,
+		&persistentKeys,
+	)
+	c.SetLogLevel(fleetctrl.LogLevelDebug)
+	addr := listener.GetIP().String()
+	s.registerAndListen(addr, c)
+	return addr
 }
 
 func (s *TestFleet) Grow() {
 	s.wg.Add(1)
 	listener := s.net.NewListener()
 	c := fleetctrl.New(
+		id.New(),
 		listener,
+		&persistentKeys,
 	)
 	c.SetLogLevel(fleetctrl.LogLevelDebug)
-	s.fleet[listener.GetIP().String()] = c
+	s.registerAndListen(listener.GetIP().String(), c)
+}
+
+func (s *TestFleet) registerAndListen(key string, c *fleetctrl.Manager) {
+	s.mux.Lock()
+	s.fleet[key] = c
+	s.mux.Unlock()
+
 	go func() {
 		select {
 		case <-s.ctx.Done():
@@ -76,19 +126,23 @@ func (s *TestFleet) Grow() {
 			s.t.Errorf("Manager stopped with %+v", err)
 		}
 	}()
-	<-c.NotifyArmed()
+	select {
+	case <-s.ctx.Done():
+		// bad
+	case <-c.NotifyArmed():
+		// good
+	}
 }
 
-func (s *TestFleet) StopOne() []string {
+func (s *TestFleet) StopOne() (string, Service) {
 	var k string
 	var v Service
 	for k, v = range s.fleet {
 		break
 	}
 	delete(s.fleet, k)
-	var keys = v.Keys(context.Background())
 	v.Stop()
-	return keys
+	return k, v
 }
 
 func (s *TestFleet) getService() (string, Service) {
