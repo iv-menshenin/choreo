@@ -76,7 +76,7 @@ func (m *Manager) tryToOwn(key string) (bool, error) {
 	}
 	chErr := m.awaitMostOf(send.CmdCandidate, m.id[:], []byte(key))
 	if err := m.sr.WantKey(key); err != nil {
-		return false, err
+		return false, fmt.Errorf("can't order key: %w", err)
 	}
 	if err := <-chErr; err != nil {
 		m.warning("OWNERSHIP DENIED %s: %+v", m.id, err)
@@ -88,7 +88,7 @@ func (m *Manager) tryToOwn(key string) (bool, error) {
 	}
 	chErr = m.awaitMostOf(send.CmdSaved, m.id[:], []byte(key))
 	if err := m.sr.ThatIsMine(key); err != nil {
-		return false, err
+		return false, fmt.Errorf("can't advertise ownership: %w", err)
 	}
 	if err := <-chErr; err != nil {
 		m.keeper.Forget(key)

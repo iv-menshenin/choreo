@@ -30,7 +30,7 @@ func (m *Manager) readAndProcess(buf []byte) error {
 	}
 	var msg send.Message
 	if err = msg.Parse(received); err != nil {
-		return err
+		return fmt.Errorf("can't parse message: %w", err)
 	}
 
 	go func() {
@@ -90,7 +90,11 @@ func (m *Manager) processKnockKnock(msg *send.Message) error {
 	if m.keeper.Keep(msg.Sender, msg.Addr) {
 		m.debug("REGISTERED: %x %s", msg.Sender, msg.Addr.String())
 	}
-	return m.sr.Welcome(msg.Addr)
+	err := m.sr.Welcome(msg.Addr)
+	if err != nil {
+		return fmt.Errorf("greeting error: %w", err)
+	}
+	return nil
 }
 
 func (m *Manager) processWelcome(msg *send.Message) error {
@@ -103,7 +107,10 @@ func (m *Manager) processWelcome(msg *send.Message) error {
 func (m *Manager) processCompare(msg *send.Message) error {
 	h := m.keeper.Hash()
 	if bytes.Equal(h[:], msg.Data) {
-		return m.sr.Compared(msg.Addr, msg.Data)
+		err := m.sr.Compared(msg.Addr, msg.Data)
+		if err != nil {
+			return fmt.Errorf("fleet-hash comparation error: %w", err)
+		}
 	}
 	return nil
 }
@@ -111,10 +118,13 @@ func (m *Manager) processCompare(msg *send.Message) error {
 func (m *Manager) processMine(msg *send.Message) error {
 	if saveErr := m.keeper.Save(msg.Sender, msg.Addr, string(msg.Data)); saveErr != nil {
 		// err = m.sendReset(msg.data) not yours
-		m.debug("OWNERSHIP IGNORED %s: %s %+v", msg.Sender, string(msg.Data), saveErr)
+		m.debug("OWNERSHIP IGNORED %s: %s %+v", msg.Sender, string(msg.Data), fmt.Errorf("can't save it: %w", saveErr))
 	} else {
 		m.debug("OWNERSHIP APPROVED %s: %s", msg.Sender, string(msg.Data))
-		return m.sr.Saved(msg.Addr, msg.Sender, msg.Data)
+		err := m.sr.Saved(msg.Addr, msg.Sender, msg.Data)
+		if err != nil {
+			return fmt.Errorf("can't advertise ownership approvement: %w", err)
+		}
 	}
 	return nil
 }
@@ -122,18 +132,29 @@ func (m *Manager) processMine(msg *send.Message) error {
 func (m *Manager) processWant(msg *send.Message) error {
 	owner, ok := m.keeper.Lookup(string(msg.Data))
 	if !ok {
-		if m.own.Add(msg.Sender, string(msg.Data)) {
-			m.debug("OWNERSHIP CANDIDATE %s: %s", msg.Sender, string(msg.Data))
-			return m.sr.Candidate(msg.Addr, msg.Sender, msg.Data)
+		if !m.own.Add(msg.Sender, string(msg.Data)) {
+			// some of the participants have already managed to declare themselves as an owner,
+			// so as not to spoil the protocol of quorum gathering, we need to keep silent
+			return nil
 		}
-		// some of the participants have already managed to declare themselves as an owner,
-		// so as not to spoil the protocol of quorum gathering, we need to keep silent
+		m.debug("OWNERSHIP CANDIDATE %s: %s", msg.Sender, string(msg.Data))
+		err := m.sr.Candidate(msg.Addr, msg.Sender, msg.Data)
+		if err != nil {
+			return fmt.Errorf("can't advertise approvement: %w", err)
+		}
 		return nil
 	}
+
+	var err error
 	if owner.Me() {
-		return m.sr.Registered(msg.Addr, msg.Data)
+		err = m.sr.Registered(msg.Addr, msg.Data)
+	} else {
+		err = m.sr.ThatIsOccupied(msg.Addr, owner.ID, msg.Data)
 	}
-	return m.sr.ThatIsOccupied(msg.Addr, owner.ID, msg.Data)
+	if err != nil {
+		return fmt.Errorf("can't advertise rejection: %w", err)
+	}
+	return nil
 }
 
 func (m *Manager) processRegistered(msg *send.Message) error {
@@ -142,7 +163,10 @@ func (m *Manager) processRegistered(msg *send.Message) error {
 	}
 	if saveErr := m.keeper.Save(msg.Sender, msg.Addr, string(msg.Data)); saveErr != nil {
 		m.warning("OWNERSHIP RESET %s: %s %+v", msg.Sender, string(msg.Data), saveErr)
-		return m.sr.Reset(msg.Data) // not yours
+		err := m.sr.Reset(msg.Data) // not yours
+		if err != nil {
+			return fmt.Errorf("can't fix ownership: %w", err)
+		}
 	}
 	return nil
 }
@@ -156,7 +180,10 @@ func (m *Manager) processOccupied(msg *send.Message) error {
 	}
 	if saveErr := m.keeper.Save(msg.Sender, msg.Addr, string(msg.Data)); saveErr != nil {
 		m.warning("OWNERSHIP RESET %s: %s %+v", msg.Sender, string(msg.Data), saveErr)
-		return m.sr.Reset(msg.Data) // not yours
+		err := m.sr.Reset(msg.Data) // not yours
+		if err != nil {
+			return fmt.Errorf("can't fix ownership: %w", err)
+		}
 	}
 	return nil
 }

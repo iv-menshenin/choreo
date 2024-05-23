@@ -1,6 +1,7 @@
 package fleetctrl
 
 import (
+	"fmt"
 	"log"
 	"math/rand"
 	"sync"
@@ -250,7 +251,7 @@ func (m *Manager) checkArmedStatus() (err error) {
 	for {
 		errCh := m.awaitMostOf(send.CmdCompared, hash[:])
 		if err = m.sr.CompareInstances(hash[:]); err != nil {
-			return err
+			return fmt.Errorf("can't ARM, checking error: %w", err)
 		}
 		err = <-errCh
 		if cnt--; err == nil || cnt < 0 {

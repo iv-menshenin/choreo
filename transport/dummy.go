@@ -45,37 +45,39 @@ func NewDummy() *DummyNetwork {
 		net:     make(chan Datagram),
 		started: time.Now(),
 	}
-	go func() {
-		for netPacket := range network.net {
-			var msg = netPacket
-			atomic.AddInt64(&network.bytesAll, int64(len(msg.data)))
-			atomic.AddInt64(&network.cntAll, 1)
-			log.Printf("ROUTING FROM %s TO %s DATA %s %x %x", msg.from, msg.to, msg.data[:4], msg.data[4:20], msg.data[20:])
-			broad := msg.to.Equal(DummyBroadcast)
-			network.mux.RLock()
-			for _, v := range network.lst {
-				var (
-					receiverIP    = msg.to.String()
-					participantIP = v.ip.String()
-				)
-				if broad || receiverIP == participantIP {
-					var rcv = v.rcv
-					go func() {
-						<-time.After(time.Duration(mr.Intn(5)+2) * time.Millisecond) //nolint:gosec // network latency
-						select {
-						case <-time.After(10 * time.Second):
-							// packet lost
-						case rcv <- msg:
-							// received
-						}
-						log.Printf("DELIVERED TO %s: %s %x", receiverIP, msg.data[:4], msg.data[20:])
-					}()
-				}
-			}
-			network.mux.RUnlock()
-		}
-	}()
+	go network.processPackets()
 	return &network
+}
+
+func (n *DummyNetwork) processPackets() {
+	for netPacket := range n.net {
+		var msg = netPacket
+		atomic.AddInt64(&n.bytesAll, int64(len(msg.data)))
+		atomic.AddInt64(&n.cntAll, 1)
+		log.Printf("ROUTING FROM %s TO %s DATA %s %x %x", msg.from, msg.to, msg.data[:4], msg.data[4:20], msg.data[20:])
+		broad := msg.to.Equal(DummyBroadcast)
+		n.mux.RLock()
+		for _, v := range n.lst {
+			var (
+				receiverIP    = msg.to.String()
+				participantIP = v.ip.String()
+			)
+			if broad || receiverIP == participantIP {
+				var rcv = v.rcv
+				go func() {
+					<-time.After(time.Duration(mr.Intn(5)+2) * time.Millisecond) //nolint:gosec // network latency
+					select {
+					case <-time.After(10 * time.Second):
+						// packet lost
+					case rcv <- msg:
+						// received
+					}
+					log.Printf("DELIVERED TO %s: %s %x", receiverIP, msg.data[:4], msg.data[20:])
+				}()
+			}
+		}
+		n.mux.RUnlock()
+	}
 }
 
 func (n *DummyNetwork) NewListener() *DummyListener {
