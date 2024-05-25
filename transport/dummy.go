@@ -63,17 +63,17 @@ func (n *DummyNetwork) processPackets() {
 				participantIP = v.ip.String()
 			)
 			if broad || receiverIP == participantIP {
-				var rcv = v.rcv
-				go func() {
+				go func(rcv chan<- Datagram) {
 					<-time.After(time.Duration(mr.Intn(5)+2) * time.Millisecond) //nolint:gosec // network latency
 					select {
 					case <-time.After(10 * time.Second):
 						// packet lost
+						log.Printf("DROPPED TO %s: %s %x", receiverIP, msg.data[:4], msg.data[20:])
 					case rcv <- msg:
 						// received
+						log.Printf("DELIVERED TO %s: %s %x", receiverIP, msg.data[:4], msg.data[20:])
 					}
-					log.Printf("DELIVERED TO %s: %s %x", receiverIP, msg.data[:4], msg.data[20:])
-				}()
+				}(v.rcv)
 			}
 		}
 		n.mux.RUnlock()

@@ -66,6 +66,7 @@ func (m *Sender) ThatIsMine(key string) error {
 func (m *Sender) ThatIsOccupied(addr net.Addr, owner id.ID, key []byte) error {
 	var data = make([]byte, 0, headSize+len(key))
 	data = append(data, CmdOccupied[:]...)
+	data = append(data, m.id[:]...)
 	data = append(data, owner[:]...)
 	data = append(data, key...)
 	return wrapIfError("can't send OCPD", m.tt.Send(data, addr))

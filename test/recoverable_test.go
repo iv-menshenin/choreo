@@ -114,7 +114,7 @@ func TestRecoverability(t *testing.T) {
 			}
 			break
 		}
-		if keeper[cc] == idx {
+		if keeper[cc] == host {
 			continue
 		}
 		if _, ok := rebased[msg]; ok {

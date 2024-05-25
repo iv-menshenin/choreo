@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync/atomic"
 
+	"github.com/iv-menshenin/choreo/fleetctrl/id"
 	"github.com/iv-menshenin/choreo/fleetctrl/internal/send"
 )
 
@@ -88,7 +89,7 @@ func (m *Manager) process(msg *send.Message) error {
 
 func (m *Manager) processKnockKnock(msg *send.Message) error {
 	if m.keeper.Keep(msg.Sender, msg.Addr) {
-		m.debug("REGISTERED: %x %s", msg.Sender, msg.Addr.String())
+		m.debug("REGISTERED: %s %s", msg.Sender, msg.Addr.String())
 	}
 	err := m.sr.Welcome(msg.Addr)
 	if err != nil {
@@ -99,7 +100,7 @@ func (m *Manager) processKnockKnock(msg *send.Message) error {
 
 func (m *Manager) processWelcome(msg *send.Message) error {
 	if m.keeper.Keep(msg.Sender, msg.Addr) {
-		m.debug("REGISTERED: %x %s", msg.Sender, msg.Addr.String())
+		m.debug("REGISTERED: %s %s", msg.Sender, msg.Addr.String())
 	}
 	return nil
 }
@@ -158,12 +159,14 @@ func (m *Manager) processWant(msg *send.Message) error {
 }
 
 func (m *Manager) processRegistered(msg *send.Message) error {
-	if msg.Sender == m.id {
+	shard, ok := m.keeper.Shard(msg.Sender)
+	if !ok {
 		return nil
 	}
-	if saveErr := m.keeper.Save(msg.Sender, msg.Addr, string(msg.Data)); saveErr != nil {
-		m.warning("OWNERSHIP RESET %s: %s %+v", msg.Sender, string(msg.Data), saveErr)
-		err := m.sr.Reset(msg.Data) // not yours
+	err := m.keeper.Save(msg.Sender, shard.Addr, string(msg.Data))
+	if err != nil {
+		m.warning("OWNERSHIP RESET %s: %s %+v", msg.Sender, string(msg.Data), err)
+		err = m.sr.Reset(msg.Data) // not yours
 		if err != nil {
 			return fmt.Errorf("can't fix ownership: %w", err)
 		}
@@ -172,17 +175,20 @@ func (m *Manager) processRegistered(msg *send.Message) error {
 }
 
 func (m *Manager) processOccupied(msg *send.Message) error {
-	if msg.Sender == m.id {
-		if m.keeper.Own(string(msg.Data)) {
-			return fmt.Errorf("can't own %s", string(msg.Data))
-		}
+	owner := id.ID(msg.Data[:id.Size])
+	key := string(msg.Data[id.Size:])
+	if owner == m.id {
+		m.keeper.Own(key)
 		return nil
 	}
-	if saveErr := m.keeper.Save(msg.Sender, msg.Addr, string(msg.Data)); saveErr != nil {
-		m.warning("OWNERSHIP RESET %s: %s %+v", msg.Sender, string(msg.Data), saveErr)
-		err := m.sr.Reset(msg.Data) // not yours
+	if shard, ok := m.keeper.Shard(owner); ok {
+		err := m.keeper.Save(owner, shard.Addr, key)
 		if err != nil {
-			return fmt.Errorf("can't fix ownership: %w", err)
+			m.warning("OWNERSHIP RESET %s: %s+%s %+v", msg.Sender, owner, key, err)
+			err = m.sr.Reset([]byte(key)) // not yours
+			if err != nil {
+				return fmt.Errorf("can't fix ownership: %w", err)
+			}
 		}
 	}
 	return nil
