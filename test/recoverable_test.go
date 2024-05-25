@@ -72,17 +72,24 @@ func TestRecoverability(t *testing.T) {
 		}
 	}
 
-	lostIP, stopped := fleet.StopOne()
-	missedKeys := stopped.Keys(context.Background())
-	missedID := stopped.ID()
-
-	fmt.Printf("%+v\n", missedKeys)
-	var rebased = make(map[string]struct{})
-	for _, k := range missedKeys {
-		rebased[k] = struct{}{}
+	var (
+		recovered  string
+		lostIP     string
+		stopped    Service
+		missedKeys []string
+		rebased    = make(map[string]struct{})
+	)
+	for len(rebased) == 0 {
+		lostIP, stopped = fleet.StopOne()
+		missedKeys = stopped.Keys(context.Background())
+		missedID := stopped.ID()
+		for _, k := range missedKeys {
+			rebased[k] = struct{}{}
+		}
+		recovered = fleet.ReturnBack(missedID)
 	}
+	fmt.Printf("%+v\n", missedKeys)
 
-	recovered := fleet.ReturnBack(missedID)
 	for iterNum := 0; iterNum < msgCount; iterNum++ {
 		var host string
 		cc := iterNum % msgClass
