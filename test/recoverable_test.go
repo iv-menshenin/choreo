@@ -14,6 +14,8 @@ import (
 )
 
 func TestRecoverability(t *testing.T) {
+	t.Parallel()
+
 	var out = bytes.NewBuffer(nil)
 	log.SetOutput(out)
 	defer func() {
@@ -24,7 +26,7 @@ func TestRecoverability(t *testing.T) {
 
 	const (
 		nodesCount = 5
-		initTime   = 30 * time.Second
+		initTime   = 60 * time.Second
 		msgCount   = 10000
 		msgClass   = 16
 	)

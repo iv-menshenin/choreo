@@ -12,6 +12,8 @@ import (
 )
 
 func TestClusterActivation(t *testing.T) {
+	t.Parallel()
+
 	var out = bytes.NewBuffer(nil)
 	log.SetOutput(out)
 	defer func() {
@@ -42,6 +44,8 @@ func TestClusterActivation(t *testing.T) {
 }
 
 func TestDiscoveryCluster(t *testing.T) {
+	t.Parallel()
+
 	var out = bytes.NewBuffer(nil)
 	log.SetOutput(out)
 	defer func() {

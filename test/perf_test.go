@@ -14,6 +14,8 @@ import (
 )
 
 func TestPerformance(t *testing.T) {
+	t.Parallel()
+
 	var out = bytes.NewBuffer(nil)
 	log.SetOutput(out)
 	defer func() {
