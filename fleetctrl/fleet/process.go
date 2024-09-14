@@ -33,6 +33,10 @@ func (m *Manager) readAndProcess(buf []byte) error {
 	if err = msg.Parse(received); err != nil {
 		return fmt.Errorf("can't parse message: %w", err)
 	}
+	if msg.Sender == m.id {
+		// skip self owned messages
+		return nil
+	}
 
 	go func() {
 		if atomic.LoadInt64(&m.state) == StateStop {
@@ -48,47 +52,41 @@ func (m *Manager) readAndProcess(buf []byte) error {
 }
 
 func (m *Manager) process(msg *send.Message) error {
-	if msg.Sender == m.id {
-		// skip self owned messages
-		return nil
-	}
-	var err error
 	switch msg.Cmd {
 	// some client wants to discover topology
 	case send.CmdDiscoveryWhoIsHere:
-		err = m.processWhoIsHere(msg)
+		return m.processWhoIsHere(msg)
 
 	// tell them all that we are online
 	case send.CmdBroadKnock:
-		err = m.processKnockKnock(msg)
+		return m.processKnockKnock(msg)
 
 	// register everyone who said hello
 	case send.CmdWelcome:
-		err = m.processWelcome(msg)
+		return m.processWelcome(msg)
 
 	// confirm the on-line instance list
 	case send.CmdBroadCompare:
-		err = m.processCompare(msg)
+		return m.processCompare(msg)
 
 	// someone bragged about a captured key
 	case send.CmdBroadMine:
-		err = m.processMine(msg)
+		return m.processMine(msg)
 
 	case send.CmdBroadWantKey:
-		err = m.processWant(msg)
+		return m.processWant(msg)
 
 	case send.CmdRegistered:
-		err = m.processRegistered(msg)
+		return m.processRegistered(msg)
 
 	case send.CmdOccupied:
-		err = m.processOccupied(msg)
+		return m.processOccupied(msg)
 
 	// someone wants to revoke possession of a key because of a conflict
 	case send.CmdBroadReset:
 		m.keeper.Reset(string(msg.Data))
 	}
-
-	return err
+	return nil
 }
 
 func (m *Manager) processWhoIsHere(msg *send.Message) error {

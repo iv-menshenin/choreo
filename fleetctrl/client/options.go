@@ -32,7 +32,7 @@ func (o *Options) normalization() error {
 		var err error
 		o.Transport, err = transport.NewUDP(o.DiscoveryPort)
 		if err != nil {
-			return err
+			return fmt.Errorf("can't make transport: %v", err)
 		}
 	}
 	if o.Logger == nil {

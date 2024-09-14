@@ -30,7 +30,7 @@ type Addr struct {
 
 func New(o *Options) (*Client, error) {
 	if o == nil {
-		return nil, fmt.Errorf("options must not be ommited")
+		return nil, fmt.Errorf("options must not be omitted")
 	}
 	if err := o.normalization(); err != nil {
 		return nil, err
@@ -55,7 +55,11 @@ func (c *Client) Close() error {
 	close(c.closed)
 	err := c.transport.Close()
 	c.allDone.Wait()
-	return err
+
+	if err != nil {
+		return fmt.Errorf("can' close: %v", err)
+	}
+	return nil
 }
 
 func (c *Client) discoveryCycle() {
