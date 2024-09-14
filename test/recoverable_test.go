@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/iv-menshenin/choreo/fleetctrl"
+	fleetctrl "github.com/iv-menshenin/choreo/fleetctrl/fleet"
 )
 
 func TestRecoverability(t *testing.T) {

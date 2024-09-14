@@ -1,4 +1,4 @@
-package fleetctrl
+package fleet
 
 import "github.com/iv-menshenin/choreo/fleetctrl/internal/shardkeeper"
 

@@ -1,4 +1,4 @@
-package fleetctrl
+package fleet
 
 import (
 	"context"

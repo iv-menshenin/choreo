@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/iv-menshenin/choreo/fleetctrl/client"
 )
 
 func TestClusterActivation(t *testing.T) {
@@ -38,6 +40,20 @@ func TestClusterActivation(t *testing.T) {
 
 	default:
 		// start test
+	}
+
+	cl, err := client.New(&client.Options{
+		DiscoveryPort:     1233,
+		DiscoveryInterval: 150 * time.Millisecond,
+		Transport:         fleet.getNetListener(),
+	})
+	if err != nil {
+		t.Errorf("can't create client: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	if servers := cl.All(); len(servers) != nodesCount {
+		t.Errorf("expected %d servers, gt: %v", nodesCount, servers)
 	}
 
 	fleet.Close()

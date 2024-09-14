@@ -1,4 +1,4 @@
-package fleetctrl
+package fleet
 
 import (
 	"bytes"
@@ -54,6 +54,10 @@ func (m *Manager) process(msg *send.Message) error {
 	}
 	var err error
 	switch msg.Cmd {
+	// some client wants to discover topology
+	case send.CmdDiscoveryWhoIsHere:
+		err = m.processWhoIsHere(msg)
+
 	// tell them all that we are online
 	case send.CmdBroadKnock:
 		err = m.processKnockKnock(msg)
@@ -85,6 +89,17 @@ func (m *Manager) process(msg *send.Message) error {
 	}
 
 	return err
+}
+
+func (m *Manager) processWhoIsHere(msg *send.Message) error {
+	if !m.Status() {
+		return nil
+	}
+	err := m.sr.ItsMe(msg.Addr)
+	if err != nil {
+		return fmt.Errorf("discovery error: %w", err)
+	}
+	return nil
 }
 
 func (m *Manager) processKnockKnock(msg *send.Message) error {

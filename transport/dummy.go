@@ -54,7 +54,6 @@ func (n *DummyNetwork) processPackets() {
 		var msg = netPacket
 		atomic.AddInt64(&n.bytesAll, int64(len(msg.data)))
 		atomic.AddInt64(&n.cntAll, 1)
-		log.Printf("ROUTING FROM %s TO %s DATA %s %x %x", msg.from, msg.to, msg.data[:4], msg.data[4:20], msg.data[20:])
 		broad := msg.to.Equal(DummyBroadcast)
 		n.mux.RLock()
 		for _, v := range n.lst {
@@ -65,13 +64,17 @@ func (n *DummyNetwork) processPackets() {
 			if broad || receiverIP == participantIP {
 				go func(rcv chan<- Datagram) {
 					<-time.After(time.Duration(mr.Intn(5)+2) * time.Millisecond) //nolint:gosec // network latency
+					var data []byte
+					if len(msg.data) > 20 {
+						data = msg.data[20:]
+					}
 					select {
 					case <-time.After(10 * time.Second):
 						// packet lost
-						log.Printf("DROPPED TO %s: %s %x", receiverIP, msg.data[:4], msg.data[20:])
+						log.Printf("DROPPED TO %s: %s %x", receiverIP, msg.data[:4], data)
 					case rcv <- msg:
 						// received
-						log.Printf("DELIVERED TO %s: %s %x", receiverIP, msg.data[:4], msg.data[20:])
+						log.Printf("DELIVERED TO %s: %s %x", receiverIP, msg.data[:4], data)
 					}
 				}(v.rcv)
 			}
@@ -98,9 +101,10 @@ func (n *DummyNetwork) NewListener() *DummyListener {
 	return &l
 }
 
-func (n *DummyNetwork) Close() {
+func (n *DummyNetwork) Close() error {
 	since := time.Since(n.started)
 	log.Printf("NETWORK STAT: %v SENT %d MESSAGES with %d KB (%0.3f kbps)", since, n.cntAll, n.bytesAll/1024, float64((1000*n.bytesAll)/since.Milliseconds())/1024)
+	return nil
 }
 
 func (d *DummyListener) SendAll(data []byte) error {
@@ -149,4 +153,8 @@ func (d *DummyListener) Listen([]byte) (*Received, error) {
 
 func (d *DummyListener) GetIP() net.IP {
 	return d.ip
+}
+
+func (d *DummyListener) Close() error {
+	return nil
 }

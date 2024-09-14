@@ -2,17 +2,18 @@ package test
 
 import (
 	"context"
+	"io"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/iv-menshenin/choreo/fleetctrl"
+	"github.com/iv-menshenin/choreo/fleetctrl/fleet"
 	"github.com/iv-menshenin/choreo/fleetctrl/id"
 	"github.com/iv-menshenin/choreo/transport"
 )
 
 var (
-	persistentKeys = fleetctrl.Options{
+	persistentKeys = fleet.Options{
 		PersistentKeys: true,
 	}
 )
@@ -20,7 +21,7 @@ var (
 type (
 	Service interface {
 		ID() id.ID
-		CheckKey(ctx context.Context, key string) (fleetctrl.Shard, error)
+		CheckKey(ctx context.Context, key string) (fleet.Shard, error)
 		Keys(ctx context.Context) []string
 		NotifyArmed() <-chan struct{}
 		Stop()
@@ -36,8 +37,8 @@ type (
 
 		wg  sync.WaitGroup
 		net interface {
+			io.Closer
 			NewListener() *transport.DummyListener
-			Close()
 		}
 	}
 )
@@ -85,12 +86,12 @@ func newTestFleet(ctx context.Context, t *testing.T, cnt int) *TestFleet {
 func (s *TestFleet) ReturnBack(missedID id.ID) string {
 	s.wg.Add(1)
 	listener := s.net.NewListener()
-	c := fleetctrl.New(
+	c := fleet.New(
 		missedID,
 		listener,
 		&persistentKeys,
 	)
-	c.SetLogLevel(fleetctrl.LogLevelDebug)
+	c.SetLogLevel(fleet.LogLevelDebug)
 	addr := listener.GetIP().String()
 	s.registerAndListen(addr, c)
 	return addr
@@ -99,16 +100,16 @@ func (s *TestFleet) ReturnBack(missedID id.ID) string {
 func (s *TestFleet) Grow() {
 	s.wg.Add(1)
 	listener := s.net.NewListener()
-	c := fleetctrl.New(
+	c := fleet.New(
 		id.New(),
 		listener,
 		&persistentKeys,
 	)
-	c.SetLogLevel(fleetctrl.LogLevelDebug)
+	c.SetLogLevel(fleet.LogLevelDebug)
 	s.registerAndListen(listener.GetIP().String(), c)
 }
 
-func (s *TestFleet) registerAndListen(key string, c *fleetctrl.Manager) {
+func (s *TestFleet) registerAndListen(key string, c *fleet.Manager) {
 	s.mux.Lock()
 	s.fleet[key] = c
 	s.mux.Unlock()
@@ -150,6 +151,10 @@ func (s *TestFleet) getService() (string, Service) {
 		return k, v
 	}
 	return "", nil
+}
+
+func (s *TestFleet) getNetListener() *transport.DummyListener {
+	return s.net.NewListener()
 }
 
 func (s *TestFleet) waitStop(ctx context.Context) error {

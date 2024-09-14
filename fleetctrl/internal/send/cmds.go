@@ -2,6 +2,7 @@ package send
 
 import (
 	"fmt"
+	"io"
 	"net"
 
 	"github.com/iv-menshenin/choreo/fleetctrl/id"
@@ -14,6 +15,7 @@ type Sender struct {
 }
 
 type Transport interface {
+	io.Closer
 	SendAll([]byte) error
 	Send([]byte, net.Addr) error
 	Listen([]byte) (*transport.Received, error)
@@ -32,6 +34,20 @@ const (
 	hashSize = 32
 	headSize = cmdSize + idSize
 )
+
+func (m *Sender) WhoIsHere() error {
+	var data = make([]byte, 0, headSize)
+	data = append(data, CmdDiscoveryWhoIsHere[:]...)
+	data = append(data, m.id[:]...)
+	return wrapIfError("can't send WSHR", m.tt.SendAll(data))
+}
+
+func (m *Sender) ItsMe(addr net.Addr) error {
+	var data = make([]byte, 0, headSize)
+	data = append(data, ResponseItIsMe[:]...)
+	data = append(data, m.id[:]...)
+	return wrapIfError("can't send ITME", m.tt.Send(data, addr))
+}
 
 func (m *Sender) KnockKnock() error {
 	var data = make([]byte, 0, headSize)
@@ -64,7 +80,7 @@ func (m *Sender) ThatIsMine(key string) error {
 }
 
 func (m *Sender) ThatIsOccupied(addr net.Addr, owner id.ID, key []byte) error {
-	var data = make([]byte, 0, headSize+len(key))
+	var data = make([]byte, 0, headSize+idSize+len(key))
 	data = append(data, CmdOccupied[:]...)
 	data = append(data, m.id[:]...)
 	data = append(data, owner[:]...)
@@ -131,6 +147,9 @@ func wrapIfError(msg string, err error) error {
 
 //nolint:gochecknoglobals,godox
 var (
+	CmdDiscoveryWhoIsHere = Cmd{'W', 'S', 'H', 'R'}
+	ResponseItIsMe        = Cmd{'I', 'T', 'M', 'E'}
+
 	CmdBroadKnock   = Cmd{'K', 'N', 'C', 'K'}
 	CmdBroadMine    = Cmd{'M', 'I', 'N', 'E'} // TODO address
 	CmdBroadWantKey = Cmd{'W', 'A', 'N', 'T'}
